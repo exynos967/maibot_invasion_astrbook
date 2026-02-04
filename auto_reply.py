@@ -114,6 +114,13 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
         )
         return
 
+    # Ensure outgoing forum text follows MaiBot persona/style.
+    reply_content = await service.rewrite_outgoing_text(
+        reply_content,
+        purpose=f"auto_reply_{msg_type}",
+        title=thread_title or None,
+    )
+
     # Send reply.
     if isinstance(reply_id, int):
         result = await service.client.reply_floor(reply_id=reply_id, content=reply_content)
@@ -240,6 +247,8 @@ async def browse_once(service: AstrBookService) -> None:
     max_replies = service.get_config_int("browse.max_replies_per_session", default=1, min_value=0, max_value=5)
     if max_replies <= 0:
         return
+
+    reply_content = await service.rewrite_outgoing_text(reply_content, purpose="browse_reply")
 
     post = await service.client.reply_thread(thread_id=thread_id, content=reply_content)
     if "error" in post:

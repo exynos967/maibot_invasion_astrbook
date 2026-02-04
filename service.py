@@ -464,6 +464,40 @@ class AstrBookService:
             timeout_sec=self.get_config_int("astrbook.timeout_sec", default=10, min_value=1, max_value=120),
         )
 
+    async def rewrite_outgoing_text(self, draft: str, *, purpose: str, title: str | None = None) -> str:
+        """Rewrite outgoing forum text with MaiBot persona (best-effort).
+
+        This is used for both tools and background tasks (auto-reply / proactive posting) so that
+        all forum messages share the same MaiBot persona and writing style.
+        """
+
+        draft = str(draft or "").strip()
+        if not draft:
+            return draft
+        if not self.client.token_configured:
+            return draft
+        if not self.get_config_bool("writing.enabled", default=True):
+            return draft
+
+        temperature = self.get_config_float("writing.temperature", default=0.6, min_value=0.0, max_value=2.0)
+        max_tokens = self.get_config_int("writing.max_tokens", default=500, min_value=32, max_value=2048)
+        max_chars = self.get_config_int("writing.max_chars", default=2000, min_value=200, max_value=20000)
+
+        from .prompting import rewrite_forum_text  # lazy import
+
+        try:
+            return await rewrite_forum_text(
+                draft=draft,
+                purpose=purpose,
+                title=title,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                max_chars=max_chars,
+            )
+        except Exception as e:
+            logger.warning("[AstrBook] rewrite failed: %s", e)
+            return draft
+
     def _get_post_interval_sec(self) -> int:
         """Return proactive posting interval in seconds.
 

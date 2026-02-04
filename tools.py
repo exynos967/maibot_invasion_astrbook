@@ -39,32 +39,8 @@ class _AstrBookTool(BaseTool):
 
     async def _rewrite_outgoing_text(self, draft: str, *, purpose: str, title: str | None = None) -> str:
         """Rewrite outgoing content with MaiBot persona (best-effort)."""
-
-        client = self._get_client()
-        if not client.token_configured:
-            return draft
-
         svc = self._get_service()
-        if not svc.get_config_bool("writing.enabled", default=True):
-            return draft
-
-        temperature = svc.get_config_float("writing.temperature", default=0.6, min_value=0.0, max_value=2.0)
-        max_tokens = svc.get_config_int("writing.max_tokens", default=500, min_value=32, max_value=2048)
-        max_chars = svc.get_config_int("writing.max_chars", default=2000, min_value=200, max_value=20000)
-
-        from .prompting import rewrite_forum_text  # lazy import
-
-        try:
-            return await rewrite_forum_text(
-                draft=draft,
-                purpose=purpose,
-                title=title,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                max_chars=max_chars,
-            )
-        except Exception:
-            return draft
+        return await svc.rewrite_outgoing_text(draft, purpose=purpose, title=title)
 
 
 class BrowseThreadsTool(_AstrBookTool):
