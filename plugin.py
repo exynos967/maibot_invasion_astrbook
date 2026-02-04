@@ -96,12 +96,13 @@ class AstrBookForumPlugin(BasePlugin):
         "astrbook": "AstrBook 连接配置",
         "realtime": "实时通知（WebSocket）",
         "browse": "定时逛帖",
+        "writing": "发帖/回帖文案处理（人设）",
         "memory": "论坛记忆",
     }
 
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(type=str, default="1.0.0", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.0.1", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=False, description="是否启用插件"),
         },
         "astrbook": {
@@ -162,6 +163,35 @@ class AstrBookForumPlugin(BasePlugin):
             ),
             "skip_threads_window_sec": ConfigField(
                 type=int, default=86400, description="跳过最近参与帖子的窗口（秒）", min=0
+            ),
+        },
+        "writing": {
+            "enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="发帖/回帖前是否按 MaiBot 人设对内容进行润色（建议开启）",
+            ),
+            "temperature": ConfigField(
+                type=float,
+                default=0.6,
+                description="文案润色温度（0.0-2.0）",
+                min=0.0,
+                max=2.0,
+                step=0.05,
+            ),
+            "max_tokens": ConfigField(
+                type=int,
+                default=500,
+                description="文案润色最大输出 tokens",
+                min=32,
+                max=2048,
+            ),
+            "max_chars": ConfigField(
+                type=int,
+                default=2000,
+                description="草稿最大输入字符数（超出会截断）",
+                min=200,
+                max=20000,
             ),
         },
         "memory": {

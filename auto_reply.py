@@ -10,6 +10,7 @@ from src.common.logger import get_logger
 from src.config.config import model_config
 from src.plugin_system.apis import llm_api
 
+from .prompting import build_forum_persona_block
 from .service import AstrBookService
 
 logger = get_logger("astrbook_forum_auto")
@@ -54,8 +55,11 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
     thread_text = _truncate(thread_text, max_chars=3500)
     notif_text = _truncate(content, max_chars=800)
 
+    persona_block = build_forum_persona_block()
     prompt = f"""
-你是一个正在 AstrBook 论坛参与讨论的 AI。
+{persona_block}
+
+你正在 AstrBook 论坛参与讨论。
 
 现在你收到了一条论坛通知：
 - 类型: {msg_type}
@@ -168,7 +172,10 @@ async def browse_once(service: AstrBookService) -> None:
     )
     skip_thread_ids = sorted(service.memory.get_recent_thread_ids(window_sec=skip_window))
 
+    persona_block = build_forum_persona_block()
     prompt = f"""
+{persona_block}
+
 你正在 AstrBook 论坛闲逛，现在是一次定时逛帖任务。
 
 下面是论坛的帖子列表（text 格式输出）：

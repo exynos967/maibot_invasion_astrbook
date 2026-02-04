@@ -37,6 +37,35 @@ class _AstrBookTool(BaseTool):
     def _get_memory(self) -> ForumMemory:
         return self._get_service().memory
 
+    async def _rewrite_outgoing_text(self, draft: str, *, purpose: str, title: str | None = None) -> str:
+        """Rewrite outgoing content with MaiBot persona (best-effort)."""
+
+        client = self._get_client()
+        if not client.token_configured:
+            return draft
+
+        svc = self._get_service()
+        if not svc.get_config_bool("writing.enabled", default=True):
+            return draft
+
+        temperature = svc.get_config_float("writing.temperature", default=0.6, min_value=0.0, max_value=2.0)
+        max_tokens = svc.get_config_int("writing.max_tokens", default=500, min_value=32, max_value=2048)
+        max_chars = svc.get_config_int("writing.max_chars", default=2000, min_value=200, max_value=20000)
+
+        from .prompting import rewrite_forum_text  # lazy import
+
+        try:
+            return await rewrite_forum_text(
+                draft=draft,
+                purpose=purpose,
+                title=title,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                max_chars=max_chars,
+            )
+        except Exception:
+            return draft
+
 
 class BrowseThreadsTool(_AstrBookTool):
     name = "browse_threads"
@@ -181,7 +210,8 @@ class CreateThreadTool(_AstrBookTool):
         if category not in VALID_CATEGORIES:
             category = "chat"
 
-        result = await self._get_client().create_thread(title=title, content=content, category=category)
+        content_to_post = await self._rewrite_outgoing_text(content, purpose="create_thread", title=title)
+        result = await self._get_client().create_thread(title=title, content=content_to_post, category=category)
         if "error" in result:
             return {"name": self.name, "content": f"Failed to create thread: {result['error']}"}
 
@@ -218,13 +248,14 @@ class ReplyThreadTool(_AstrBookTool):
         if not content:
             return {"name": self.name, "content": "Reply content cannot be empty"}
 
-        result = await self._get_client().reply_thread(thread_id=thread_id, content=content)
+        content_to_post = await self._rewrite_outgoing_text(content, purpose="reply_thread")
+        result = await self._get_client().reply_thread(thread_id=thread_id, content=content_to_post)
         if "error" in result:
             return {"name": self.name, "content": f"Failed to reply: {result['error']}"}
 
         self._get_memory().add_memory(
             "replied",
-            f"我回复了帖子ID:{thread_id}: {content[:60]}",
+            f"我回复了帖子ID:{thread_id}: {content_to_post[:60]}",
             metadata={"thread_id": thread_id},
         )
 
@@ -249,13 +280,14 @@ class ReplyFloorTool(_AstrBookTool):
         if not content:
             return {"name": self.name, "content": "Reply content cannot be empty"}
 
-        result = await self._get_client().reply_floor(reply_id=reply_id, content=content)
+        content_to_post = await self._rewrite_outgoing_text(content, purpose="reply_floor")
+        result = await self._get_client().reply_floor(reply_id=reply_id, content=content_to_post)
         if "error" in result:
             return {"name": self.name, "content": f"Failed to reply: {result['error']}"}
 
         self._get_memory().add_memory(
             "replied",
-            f"我进行了楼中楼回复(reply_id={reply_id}): {content[:60]}",
+            f"我进行了楼中楼回复(reply_id={reply_id}): {content_to_post[:60]}",
             metadata={"reply_id": reply_id},
         )
         return {"name": self.name, "content": "Sub-reply successful"}

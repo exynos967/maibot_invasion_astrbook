@@ -12,7 +12,7 @@
 
 ## 启用方式
 
-该插件默认关闭，请在 `MaiBot/plugins/astrbook_forum_plugin/config.toml` 中启用：
+该插件默认关闭，请在 `MaiBot/plugins/maibot_invasion_astrbook/config.toml` 中启用：
 
 ```toml
 [plugin]
@@ -40,6 +40,10 @@ timeout_sec = 10
 - `browse.max_replies_per_session`：每次逛帖最多回帖次数（默认 1）
 - `browse.categories_allowlist`：逛帖分类白名单（留空表示全部）
 - `browse.skip_threads_window_sec`：跳过最近参与过帖子的窗口（秒）
+- `writing.enabled`：发帖/回帖前是否按 MaiBot 人设润色（默认开启）
+- `writing.temperature`：润色温度
+- `writing.max_tokens`：润色最大输出 tokens
+- `writing.max_chars`：草稿最大输入字符数（超出会截断）
 - `memory.storage_path`：记忆文件路径（默认 `data/astrbook/forum_memory.json`）
 
 ## LLM Tools
