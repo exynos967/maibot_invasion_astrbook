@@ -188,18 +188,18 @@ async def browse_once(service: AstrBookService) -> None:
 下面是论坛的帖子列表（text 格式输出）：
 {_truncate(browse_text, 3500)}
 
-你最多可以在一个帖子下回复 1 次（不要发新帖），如果没有合适内容可以选择不回复。
+你最多可以在一个帖子下回复 1 次（不要发新帖）。为了避免“没看内容就回”，你需要先选择一个帖子去阅读，然后再决定是否回复。
 
-请避免回复你最近已经参与过的帖子（避免重复），以下是你最近参与过的 thread_id 列表：
+请避免选择你最近已经参与过的帖子（避免重复），以下是你最近参与过的 thread_id 列表：
 {skip_thread_ids}
 
 请输出严格 JSON（不要输出其他内容）：\n
-{{\"action\":\"none\"|\"reply_thread\",\"thread_id\": 123, \"content\":\"...\", \"diary\":\"...\"}}
+{{\"action\":\"none\"|\"reply_thread\",\"thread_id\": 123, \"thread_title\":\"...\", \"diary\":\"...\"}}
 
 字段说明：
-- action: none 表示只浏览不回复；reply_thread 表示在某个 thread 下另开一层回复
+- action: none 表示只浏览不回复；reply_thread 表示你想打开并阅读某个帖子，然后再决定是否回复
 - thread_id: 当 action=reply_thread 时必填
-- content: 回复内容（当 action=reply_thread 时必填）
+- thread_title: 可选，帖子标题（便于记录）
 - diary: 逛帖日记/总结（建议填写，50-300字左右）
 """.strip()
 
@@ -223,20 +223,21 @@ async def browse_once(service: AstrBookService) -> None:
         return
 
     diary = str(data.get("diary", "") or "").strip()
-    if diary:
-        service.memory.add_diary(diary)
-
     action = str(data.get("action", "none") or "none").strip()
     if action != "reply_thread":
+        if diary:
+            service.memory.add_diary(diary)
         service.memory.add_memory("browsed", "我逛了逛 AstrBook 论坛，没有发表回复。", metadata={"category": category})
         return
 
     thread_id = data.get("thread_id")
-    reply_content = str(data.get("content", "") or "").strip()
-    if not isinstance(thread_id, int) or not reply_content:
+    thread_title = str(data.get("thread_title", "") or "").strip()
+    if not isinstance(thread_id, int):
         return
 
     if thread_id in set(skip_thread_ids):
+        if diary:
+            service.memory.add_diary(diary)
         service.memory.add_memory(
             "browsed",
             f"我原本想回复帖子ID:{thread_id}，但发现最近参与过，为了避免重复我选择跳过。",
@@ -248,7 +249,77 @@ async def browse_once(service: AstrBookService) -> None:
     if max_replies <= 0:
         return
 
-    reply_content = await service.rewrite_outgoing_text(reply_content, purpose="browse_reply")
+    # Read thread first, then decide whether to reply.
+    thread_text = ""
+    thread_result = await service.client.read_thread(thread_id=thread_id, page=1)
+    if "error" in thread_result:
+        service.last_error = str(thread_result.get("error"))
+        if diary:
+            service.memory.add_diary(diary)
+        service.memory.add_memory(
+            "browsed",
+            f"我逛论坛时打开帖子ID:{thread_id} 但读取失败：{service.last_error}",
+            metadata={"thread_id": thread_id, "category": category},
+        )
+        return
+    if "text" in thread_result:
+        thread_text = str(thread_result.get("text") or "")
+
+    thread_text = _truncate(thread_text, max_chars=3500)
+
+    reply_prompt = f"""
+{persona_block}
+
+你正在 AstrBook 论坛闲逛，这是一次定时逛帖任务。
+
+你已经打开并阅读了这个帖子：
+- 帖子: 《{thread_title or '（标题未知）'}》(ID:{thread_id})
+
+下面是帖子正文与部分楼层（text 格式输出，可能被截断）：
+{thread_text}
+
+现在请你决定是否需要回复，并给出你要发表的回复内容。
+
+要求：
+1) 只输出严格 JSON，不要输出任何多余文字。
+2) JSON 格式：{{\"should_reply\": true/false, \"content\": \"...\", \"diary\": \"...\"}}
+3) should_reply=false 时，content 为空字符串。
+4) 回复需有实质内容，避免纯水；语气自然、友好；不要发新帖。
+5) diary 为逛帖日记/总结（建议填写，50-300字左右）。
+""".strip()
+
+    ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
+        prompt=reply_prompt,
+        model_config=model_config.model_task_config.replyer,
+        request_type="astrbook.browse.reply",
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    if not ok:
+        logger.warning(f"[browse.reply] LLM failed: {resp}")
+        return
+
+    reply_data = _parse_json_object(resp)
+    if not reply_data:
+        logger.warning(f"[browse.reply] invalid json from model={model_name}: {resp[:200]}")
+        return
+
+    diary2 = str(reply_data.get("diary", "") or "").strip()
+    final_diary = diary2 or diary
+    if final_diary:
+        service.memory.add_diary(final_diary)
+
+    should_reply = bool(reply_data.get("should_reply", False))
+    reply_content = str(reply_data.get("content", "") or "").strip()
+    if not should_reply or not reply_content:
+        service.memory.add_memory(
+            "browsed",
+            f"我逛论坛时读完帖子ID:{thread_id} 后决定不回复。",
+            metadata={"thread_id": thread_id, "category": category},
+        )
+        return
+
+    reply_content = await service.rewrite_outgoing_text(reply_content, purpose="browse_reply", title=thread_title or None)
 
     post = await service.client.reply_thread(thread_id=thread_id, content=reply_content)
     if "error" in post:
