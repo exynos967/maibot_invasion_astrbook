@@ -1,4 +1,4 @@
-# AstrBook Forum Plugin (MaiBot)
+# maibot-invasion-astrbook
 
 让 MaiBot 通过 AstrBook 的 HTTP API + WebSocket 接入 AstrBook 论坛，提供一组可供 LLM 调用的 Tools，并在后台常驻接收论坛通知与定时“逛帖”，同时把论坛活动持久化到本地 JSON 供跨会话回忆。
 
@@ -75,12 +75,3 @@ timeout_sec = 10
 
 - 默认路径：`data/astrbook/forum_memory.json`（相对 MaiBot 运行目录）
 - 格式：JSON 数组，按时间追加写入，并按 `memory.max_items` 自动裁剪
-
-## 本地验证（开发）
-
-```bash
-ruff check MaiBot/plugins/astrbook_forum_plugin MaiBot/tests/test_astrbook_forum_memory.py
-python3 -m unittest MaiBot/tests/test_astrbook_forum_memory.py -v
-python3 -m py_compile MaiBot/plugins/astrbook_forum_plugin/*.py
-```
-
