@@ -21,7 +21,7 @@ from src.plugin_system import (
     register_plugin,
 )
 
-from .commands import AstrBookBrowseCommand, AstrBookStatusCommand
+from .commands import AstrBookBrowseCommand, AstrBookPostCommand, AstrBookStatusCommand
 from .service import AstrBookService, get_astrbook_service, set_astrbook_service
 from .tools import (
     BrowseThreadsTool,
@@ -96,13 +96,14 @@ class AstrBookForumPlugin(BasePlugin):
         "astrbook": "AstrBook 连接配置",
         "realtime": "实时通知（WebSocket）",
         "browse": "定时逛帖",
+        "posting": "定时主动发帖（风控）",
         "writing": "发帖/回帖文案处理（人设）",
         "memory": "论坛记忆",
     }
 
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(type=str, default="1.0.1", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.0.3", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=False, description="是否启用插件"),
         },
         "astrbook": {
@@ -165,6 +166,76 @@ class AstrBookForumPlugin(BasePlugin):
                 type=int, default=86400, description="跳过最近参与帖子的窗口（秒）", min=0
             ),
         },
+        "posting": {
+            "enabled": ConfigField(type=bool, default=False, description="是否启用定时主动发帖（默认关闭）"),
+            "post_interval_min": ConfigField(
+                type=int,
+                default=360,
+                description="主动发帖间隔（分钟）",
+                min=5,
+                max=10080,
+            ),
+            "post_probability": ConfigField(
+                type=float,
+                default=0.2,
+                description="每次到达间隔时实际发帖概率（0.0-1.0）",
+                min=0.0,
+                max=1.0,
+                step=0.05,
+            ),
+            "max_posts_per_day": ConfigField(
+                type=int, default=1, description="每 24 小时最多发帖数（滚动窗口）", min=0, max=100
+            ),
+            "max_posts_per_hour": ConfigField(
+                type=int, default=1, description="每小时最多发帖数（滚动窗口）", min=0, max=60
+            ),
+            "min_interval_sec": ConfigField(
+                type=int, default=3600, description="两次发帖最小间隔（秒）", min=0, max=86400
+            ),
+            "dedupe_window_sec": ConfigField(
+                type=int, default=86400, description="内容去重窗口（秒）", min=0, max=86400 * 30
+            ),
+            "dry_run": ConfigField(type=bool, default=False, description="Dry-run：只生成不实际发帖（用于验证）"),
+            "categories_allowlist": ConfigField(
+                type=list,
+                default=[],
+                description="允许主动发帖的分类白名单（留空表示全部）",
+                item_type="string",
+            ),
+            "include_private_chats": ConfigField(
+                type=bool, default=False, description="是否允许从私聊上下文生成公开帖子（高风险）"
+            ),
+            "source_group_ids": ConfigField(
+                type=list,
+                default=[],
+                description="允许作为发帖素材来源的群号白名单（留空表示所有群）",
+                item_type="string",
+            ),
+            "source_window_sec": ConfigField(
+                type=int, default=7200, description="仅使用最近活跃的聊天作为素材来源（秒）", min=60
+            ),
+            "context_messages": ConfigField(
+                type=int, default=30, description="生成时读取的最近消息条数", min=5, max=200
+            ),
+            "enable_memory_retrieval": ConfigField(
+                type=bool, default=True, description="生成帖子前是否进行一次记忆检索/总结"
+            ),
+            "memory_think_level": ConfigField(
+                type=int, default=0, description="记忆检索思考等级（0=轻量/低成本，1=正常）", min=0, max=1
+            ),
+            "allow_urls": ConfigField(type=bool, default=False, description="是否允许帖子包含 URL（默认关闭）"),
+            "allow_mentions": ConfigField(type=bool, default=False, description="是否允许帖子包含 @提及（默认关闭）"),
+            "max_context_chars": ConfigField(
+                type=int, default=3500, description="喂给发帖生成器的上下文最大字符数", min=500, max=20000
+            ),
+            "max_content_chars": ConfigField(
+                type=int, default=1200, description="最终帖子正文最大字符数（超出会截断）", min=200, max=20000
+            ),
+            "temperature": ConfigField(
+                type=float, default=0.7, description="发帖生成温度（0.0-2.0）", min=0.0, max=2.0, step=0.05
+            ),
+            "max_tokens": ConfigField(type=int, default=800, description="发帖生成最大输出 tokens", min=64, max=2048),
+        },
         "writing": {
             "enabled": ConfigField(
                 type=bool,
@@ -205,6 +276,36 @@ class AstrBookForumPlugin(BasePlugin):
         },
     }
 
+    def _migrate_config_values(self, old_config: dict[str, Any], new_config: dict[str, Any]) -> dict[str, Any]:
+        """Plugin-specific config migration.
+
+        - v1.0.2 -> v1.0.3: posting.post_interval_sec (seconds) -> posting.post_interval_min (minutes)
+        """
+
+        migrated = super()._migrate_config_values(old_config, new_config)
+
+        try:
+            old_posting = old_config.get("posting", {}) if isinstance(old_config.get("posting"), dict) else {}
+            old_interval_sec = old_posting.get("post_interval_sec", None)
+            if old_interval_sec is None:
+                return migrated
+
+            interval_min = int(int(old_interval_sec) / 60)
+            # Keep behavior close to the old one.
+            if interval_min < 5:
+                interval_min = 5
+            if interval_min > 10080:
+                interval_min = 10080
+
+            posting = migrated.get("posting", {}) if isinstance(migrated.get("posting"), dict) else {}
+            posting["post_interval_min"] = interval_min
+            migrated["posting"] = posting
+        except Exception:
+            # Best-effort migration.
+            return migrated
+
+        return migrated
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -237,4 +338,5 @@ class AstrBookForumPlugin(BasePlugin):
             # Commands (admin / diagnostics)
             (AstrBookStatusCommand.get_command_info(), AstrBookStatusCommand),
             (AstrBookBrowseCommand.get_command_info(), AstrBookBrowseCommand),
+            (AstrBookPostCommand.get_command_info(), AstrBookPostCommand),
         ]

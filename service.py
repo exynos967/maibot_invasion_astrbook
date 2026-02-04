@@ -4,7 +4,7 @@ import asyncio
 import random
 import time
 from collections import deque
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
@@ -12,8 +12,12 @@ from src.common.logger import get_logger
 
 from .client import AstrBookClient, AstrBookClientConfig
 from .memory import ForumMemory
+from .posting_policy import PostRateLimiter
 
 logger = get_logger("astrbook_forum_service")
+
+if TYPE_CHECKING:
+    from .proactive_post import ProactivePostResult
 
 
 _service_instance: "AstrBookService | None" = None
@@ -44,6 +48,7 @@ class AstrBookService:
         self.ws_connected: bool = False
         self.bot_user_id: int | None = None
         self.next_browse_time: float | None = None
+        self.next_post_time: float | None = None
 
         self._running: bool = False
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -55,12 +60,32 @@ class AstrBookService:
         self._recent_reply_ids: dict[int, float] = {}
         self._auto_reply_timestamps: deque[float] = deque(maxlen=200)
 
+        self._post_lock = asyncio.Lock()
+
+        self.post_rate_limiter = PostRateLimiter(
+            max_posts_per_day=self.get_config_int("posting.max_posts_per_day", default=1, min_value=0, max_value=100),
+            max_posts_per_hour=self.get_config_int("posting.max_posts_per_hour", default=1, min_value=0, max_value=60),
+            min_interval_sec=self.get_config_int(
+                "posting.min_interval_sec", default=3600, min_value=0, max_value=86400
+            ),
+        )
+        self.recent_post_hashes: dict[str, float] = {}
+
     def update_config(self, config: dict[str, Any] | None) -> None:
         self.config = config or {}
         self.client.configure(self._build_client_config())
         self.memory.configure(
             max_items=self.get_config_int("memory.max_items", default=50, min_value=1, max_value=5000),
             storage_path=self.get_config_str("memory.storage_path", default="data/astrbook/forum_memory.json"),
+        )
+        self.post_rate_limiter.max_posts_per_day = self.get_config_int(
+            "posting.max_posts_per_day", default=1, min_value=0, max_value=100
+        )
+        self.post_rate_limiter.max_posts_per_hour = self.get_config_int(
+            "posting.max_posts_per_hour", default=1, min_value=0, max_value=60
+        )
+        self.post_rate_limiter.min_interval_sec = self.get_config_int(
+            "posting.min_interval_sec", default=3600, min_value=0, max_value=86400
         )
 
     async def start(self) -> None:
@@ -73,16 +98,20 @@ class AstrBookService:
 
         realtime_enabled = self.get_config_bool("realtime.enabled", default=True)
         browse_enabled = self.get_config_bool("browse.enabled", default=True)
+        posting_enabled = self.get_config_bool("posting.enabled", default=False)
 
         if realtime_enabled:
             self._tasks.append(self._create_task(self._ws_loop(), name="astrbook_ws_loop"))
         if browse_enabled:
             self._tasks.append(self._create_task(self._browse_loop(), name="astrbook_browse_loop"))
+        if posting_enabled:
+            self._tasks.append(self._create_task(self._post_loop(), name="astrbook_post_loop"))
 
         logger.info(
-            "[AstrBook] Service started: realtime=%s browse=%s",
+            "[AstrBook] Service started: realtime=%s browse=%s posting=%s",
             "on" if realtime_enabled else "off",
             "on" if browse_enabled else "off",
+            "on" if posting_enabled else "off",
         )
 
     async def stop(self) -> None:
@@ -126,6 +155,36 @@ class AstrBookService:
         """Schedule a browse session in background (for admin commands)."""
         task = self._create_task(self.trigger_browse_once(), name="astrbook_manual_browse")
         self._bg_tasks.add(task)
+
+    async def trigger_post_once(
+        self, *, force: bool = False, preferred_stream_id: str | None = None
+    ) -> "ProactivePostResult":
+        """Manually trigger one proactive post session (no scheduling)."""
+        self.update_config(self.config)
+        async with self._post_lock:
+            from .proactive_post import proactive_post_once  # lazy import (avoid circular)
+
+            result: ProactivePostResult = await proactive_post_once(
+                self, force=force, preferred_stream_id=preferred_stream_id
+            )
+
+        # Always log the decision so admins can diagnose "no动静" cases.
+        if result.status == "posted":
+            logger.info("[AstrBook] proactive post done: %s", result.reason)
+        else:
+            logger.info("[AstrBook] proactive post %s: %s", result.status, result.reason)
+        return result
+
+    def schedule_post_once(
+        self, *, force: bool = False, preferred_stream_id: str | None = None
+    ) -> asyncio.Task:
+        """Schedule a proactive post in background (for admin commands)."""
+        task = self._create_task(
+            self.trigger_post_once(force=force, preferred_stream_id=preferred_stream_id),
+            name="astrbook_manual_post",
+        )
+        self._bg_tasks.add(task)
+        return task
 
     # ==================== WebSocket ====================
 
@@ -358,6 +417,26 @@ class AstrBookService:
             self.next_browse_time = time.time() + interval
             await asyncio.sleep(interval)
 
+    # ==================== Scheduled proactive posting ====================
+
+    async def _post_loop(self) -> None:
+        await asyncio.sleep(120)
+
+        while self._running:
+            try:
+                interval = self._get_post_interval_sec()
+                self.next_post_time = time.time() + interval
+                await self.trigger_post_once()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.last_error = str(e)
+                logger.warning(f"[AstrBook] post loop error: {e}")
+
+            interval = self._get_post_interval_sec()
+            self.next_post_time = time.time() + interval
+            await asyncio.sleep(interval)
+
     # ==================== helpers ====================
 
     def _create_task(self, coro: Any, name: str) -> asyncio.Task:
@@ -385,12 +464,31 @@ class AstrBookService:
             timeout_sec=self.get_config_int("astrbook.timeout_sec", default=10, min_value=1, max_value=120),
         )
 
+    def _get_post_interval_sec(self) -> int:
+        """Return proactive posting interval in seconds.
+
+        - New config: posting.post_interval_min (minutes)
+        - Legacy config (fallback): posting.post_interval_sec (seconds)
+        """
+
+        raw_min = self._get_config_value("posting.post_interval_min", None)
+        if raw_min is not None:
+            interval_min = self.get_config_int("posting.post_interval_min", default=360, min_value=5, max_value=10080)
+            return interval_min * 60
+
+        return self.get_config_int("posting.post_interval_sec", default=21600, min_value=300, max_value=86400 * 7)
+
     def get_status_text(self) -> str:
         ws_status = "已连接" if self.ws_connected else "未连接"
+        posting_cfg = "on" if self.get_config_bool("posting.enabled", default=False) else "off"
+        posting_task = "running" if self._is_task_running("astrbook_post_loop") else "off"
         next_browse = (
             time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.next_browse_time))
             if self.next_browse_time
             else "N/A"
+        )
+        next_post = (
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.next_post_time)) if self.next_post_time else "N/A"
         )
         return (
             "AstrBook 论坛插件状态\n"
@@ -399,8 +497,28 @@ class AstrBookService:
             f"- bot_user_id: {self.bot_user_id if self.bot_user_id is not None else 'N/A'}\n"
             f"- last_error: {self.last_error or 'N/A'}\n"
             f"- memory_items: {self.memory.total_items}\n"
+            f"- posting.enabled(config): {posting_cfg}\n"
+            f"- post_loop_task: {posting_task}\n"
             f"- next_browse_time: {next_browse}\n"
+            f"- next_post_time: {next_post}\n"
         )
+
+    def _is_task_running(self, name: str) -> bool:
+        for task in self._tasks:
+            try:
+                if task.get_name() == name and not task.done():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def cleanup_recent_post_hashes(self, *, now: float, window_sec: int) -> None:
+        if window_sec <= 0:
+            self.recent_post_hashes.clear()
+            return
+        expired = [h for h, ts in self.recent_post_hashes.items() if now - ts > window_sec]
+        for h in expired:
+            del self.recent_post_hashes[h]
 
     def _get_config_value(self, key: str, default: Any) -> Any:
         keys = key.split(".")
