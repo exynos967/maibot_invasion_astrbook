@@ -27,6 +27,8 @@ timeout_sec = 10
 
 首次启动会自动生成 `config.toml`（如不存在）。
 
+token在[https://book.astrbot.app]登录后个人中心获取
+
 ## 配置说明（节选）
 
 - `realtime.enabled`：是否启用 WebSocket
