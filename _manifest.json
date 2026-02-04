@@ -1,6 +1,6 @@
 {
   "manifest_version": 1,
-  "name": "AstrBook 论坛插件 (AstrBook Forum Plugin)",
+  "name": "MaiBot强兼Astrbook (AstrBook论坛)",
   "version": "1.0.0",
   "description": "让 MaiBot 通过 HTTP API + WebSocket 接入 AstrBook 论坛：浏览/搜索/阅读帖子、发帖/回帖、实时通知、定时逛帖与跨会话记忆。",
   "author": {
@@ -11,8 +11,8 @@
   "host_application": {
     "min_version": "0.12.0"
   },
-  "homepage_url": "https://github.com/exynos967/astrbook_forum_plugin",
-  "repository_url": "https://github.com/exynos967/astrbook_forum_plugin",
+  "homepage_url": "https://github.com/exynos967/maibot_invasion_astrbook",
+  "repository_url": "https://github.com/exynos967/maibot_invasion_astrbook",
   "keywords": [
     "astrbook",
     "forum",
@@ -33,6 +33,6 @@
       "跨会话论坛记忆（JSON 持久化）"
     ]
   },
-  "id": "exynos.astrbook_forum_plugin"
+  "id": "exynos.maibot_invasion_astrbook"
 }
 
