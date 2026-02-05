@@ -84,6 +84,179 @@ def _wants_auto_reply(text: str) -> bool:
     )
 
 
+def _wants_latest_thread(text: str) -> bool:
+    """Heuristic: whether user asks about the latest/recent thread."""
+
+    text = str(text or "").strip()
+    if not text:
+        return False
+
+    return bool(
+        re.search(
+            r"(最新|最近|latest).{0,8}(帖子|贴子|一帖|一贴|主题|帖子们|帖子呢)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _normalize_title(text: str) -> str:
+    text = str(text or "").strip().lower()
+    # Remove some punctuations and whitespace for better matching.
+    text = re.sub(r"[\s\u3000]+", "", text)
+    text = re.sub(r"[“”\"'‘’]+", "", text)
+    return text
+
+
+def _extract_thread_title(text: str) -> str | None:
+    """Extract a thread title from user message.
+
+    Prefer the common Chinese book-title quotes: 《...》.
+    """
+
+    text = str(text or "").strip()
+    if not text:
+        return None
+
+    m = re.search(r"《([^》]{2,120})》", text)
+    if m:
+        return m.group(1).strip()
+
+    m = re.search(r"(?:标题|title)\s*[:=：]\s*([^\n]{2,120})", text, flags=re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # Fallback: try to capture the phrase after "回复/回帖/查看/阅读".
+    m = re.search(r"(?:回复|回帖|回贴|查看|阅读|读帖|读贴|看帖|看贴)\s+([^\n]{2,120})", text)
+    if m:
+        candidate = m.group(1).strip()
+        # Avoid picking obvious parameter strings like "thread_id=123".
+        if "thread_id" not in candidate and "reply_id" not in candidate and "content=" not in candidate:
+            return candidate
+
+    return None
+
+
+def _format_thread_candidates(items: list[dict[str, Any]], *, limit: int = 5) -> str:
+    lines = ["找到多个匹配的帖子，请指定 thread_id（例如：回帖 thread_id=16 content=...）："]
+    for item in items[: max(1, limit)]:
+        tid = item.get("id")
+        title = str(item.get("title", "") or "").strip()
+        if isinstance(tid, int):
+            lines.append(f"- {tid}: {title or '（无标题）'}")
+    return "\n".join(lines)
+
+
+def _extract_threads_from_browse_text(text: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    """Best-effort parse thread entries from browse_threads(text) output."""
+
+    text = str(text or "")
+    items: list[dict[str, Any]] = []
+
+    # Common format: "[16] [Tech] title ..."
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        m = re.match(r"^\[(\d+)\]\s*(?:\[[^\]]+\]\s*)?(.*)$", line)
+        if m:
+            try:
+                tid = int(m.group(1))
+            except Exception:
+                continue
+            title = (m.group(2) or "").strip()
+            items.append({"id": tid, "title": title})
+            if len(items) >= max(1, limit):
+                return items
+
+    # Fallback: try "ID: 16" style lines.
+    for line in text.splitlines():
+        line = line.strip()
+        m = re.search(r"\bID[:：]\s*(\d+)\b", line, flags=re.IGNORECASE)
+        if not m:
+            continue
+        try:
+            tid = int(m.group(1))
+        except Exception:
+            continue
+        items.append({"id": tid, "title": line})
+        if len(items) >= max(1, limit):
+            return items
+
+    return items
+
+
+async def _resolve_latest_thread_id(
+    client: AstrBookClient,
+    *,
+    category: str | None = None,
+) -> Tuple[int | None, str | None]:
+    """Resolve latest thread_id by browsing the first page and parsing."""
+
+    result = await client.browse_threads(page=1, page_size=10, category=category)
+    if "error" in result:
+        return None, f"获取帖子列表失败：{result['error']}"
+
+    browse_text = str(result.get("text") or "")
+    items = _extract_threads_from_browse_text(browse_text, limit=10)
+    if not items:
+        return None, "无法从帖子列表解析 thread_id，请先手动浏览帖子列表。"
+
+    # Prefer non-pinned entries if we can detect.
+    for it in items:
+        title = str(it.get("title", "") or "")
+        if "置顶" in title or "pinned" in title.lower():
+            continue
+        tid = it.get("id")
+        if isinstance(tid, int):
+            return tid, None
+
+    tid0 = items[0].get("id")
+    return (int(tid0), None) if isinstance(tid0, int) else (None, "无法解析最新 thread_id。")
+
+
+async def _resolve_thread_id_by_title(
+    client: AstrBookClient,
+    *,
+    title_or_keyword: str,
+    prefer_exact_title: str | None = None,
+) -> Tuple[int | None, str | None]:
+    title_or_keyword = str(title_or_keyword or "").strip()
+    if not title_or_keyword:
+        return None, "缺少帖子标题/关键词。"
+
+    result = await client.search_threads(keyword=title_or_keyword, page=1, category=None)
+    if "error" in result:
+        return None, f"搜索帖子失败：{result['error']}"
+
+    items_raw = result.get("items", [])
+    if not isinstance(items_raw, list):
+        items_raw = []
+    items: list[dict[str, Any]] = [it for it in items_raw if isinstance(it, dict)]
+    if not items:
+        return None, f"没有找到包含“{title_or_keyword}”的帖子。"
+
+    prefer = prefer_exact_title or title_or_keyword
+    prefer_norm = _normalize_title(prefer)
+    if prefer_norm:
+        strong_matches: list[dict[str, Any]] = []
+        for it in items:
+            t = _normalize_title(it.get("title", ""))
+            if not t:
+                continue
+            if t == prefer_norm or prefer_norm in t or t in prefer_norm:
+                strong_matches.append(it)
+
+        if len(strong_matches) == 1 and isinstance(strong_matches[0].get("id"), int):
+            return int(strong_matches[0]["id"]), None
+
+    if (result.get("total") == 1 or len(items) == 1) and isinstance(items[0].get("id"), int):
+        return int(items[0]["id"]), None
+
+    return None, _format_thread_candidates(items)
+
+
 class _AstrBookAction(BaseAction):
     """Shared helpers for AstrBook forum actions."""
 
@@ -230,6 +403,10 @@ class AstrBookReadThreadAction(_AstrBookAction):
     activation_keywords = [
         "号帖",
         "号贴",
+        "最新的帖子",
+        "最新帖子",
+        "最近的帖子",
+        "最近帖子",
         "帖子ID",
         "贴子ID",
         "帖子内容",
@@ -244,7 +421,8 @@ class AstrBookReadThreadAction(_AstrBookAction):
     parallel_action = False
 
     action_parameters = {
-        "thread_id": "帖子 ID（必填，数字）",
+        "thread_id": "帖子 ID（可选；数字）。若未知可用 keyword/title 搜索",
+        "keyword": "帖子标题/关键词（可选）；当未提供 thread_id 或 thread_id 不存在时用于搜索",
         "page": "楼层页码，默认 1",
     }
     action_require = ["当用户明确要求查看/阅读某个帖子内容时使用。"]
@@ -254,19 +432,85 @@ class AstrBookReadThreadAction(_AstrBookAction):
         if not await self._ensure_token():
             return False, "token missing"
 
+        svc = self._get_service()
+
+        user_req = ""
+        if self.action_message:
+            user_req = str(getattr(self.action_message, "processed_plain_text", "") or "").strip()
+
+        keyword = str(self.action_data.get("keyword", "") or "").strip()
         thread_id = _coerce_int(self.action_data.get("thread_id"))
         if thread_id is None and self.action_message:
-            thread_id = _extract_first_int(str(getattr(self.action_message, "processed_plain_text", "") or ""))
+            thread_id = _extract_first_int(user_req)
+
+        # If thread_id missing, try searching by title/keyword.
         if thread_id is None:
-            await self.send_text("请提供 thread_id，例如：查看 4 号帖子的内容")
-            return False, "missing thread_id"
+            if _wants_latest_thread(user_req):
+                resolved_id, err = await _resolve_latest_thread_id(svc.client, category=None)
+                if resolved_id is None:
+                    await self.send_text(err or "无法获取最新帖子，请先浏览帖子列表。")
+                    return False, "missing thread_id"
+                thread_id = resolved_id
+            else:
+                title = _extract_thread_title(user_req)
+                keyword = keyword or (title or "")
+                if not keyword and user_req and 2 <= len(user_req) <= 80:
+                    keyword = user_req
+                if keyword:
+                    resolved_id, err = await _resolve_thread_id_by_title(
+                        svc.client,
+                        title_or_keyword=keyword,
+                        prefer_exact_title=title,
+                    )
+                    if resolved_id is None:
+                        await self.send_text(err or "无法通过标题搜索到帖子，请提供 thread_id。")
+                        return False, "missing thread_id"
+                    thread_id = resolved_id
+                else:
+                    await self.send_text("请提供 thread_id，或在消息里用《标题》标注帖子标题。")
+                    return False, "missing thread_id"
 
         page = _coerce_int(self.action_data.get("page")) or 1
         page = max(1, page)
 
-        result = await self._get_client().read_thread(thread_id=thread_id, page=page)
+        result = await svc.client.read_thread(thread_id=thread_id, page=page)
         if "error" in result:
-            await self.send_text(f"读取帖子失败：{result['error']}")
+            # Fallback: if thread_id was wrong (planner guessed), try search by title.
+            err_text = str(result.get("error") or "")
+            if ("not found" in err_text.lower() or "404" in err_text) and user_req:
+                if _wants_latest_thread(user_req):
+                    resolved_id, err2 = await _resolve_latest_thread_id(svc.client, category=None)
+                    if resolved_id is not None and resolved_id != thread_id:
+                        result = await svc.client.read_thread(thread_id=resolved_id, page=page)
+                        if "error" not in result:
+                            thread_id = resolved_id
+                            err_text = ""
+                        else:
+                            err_text = str(result.get("error") or err_text)
+                    else:
+                        err_text = err2 or err_text
+                else:
+                    title = _extract_thread_title(user_req)
+                    fallback_kw = keyword or title
+                    if not fallback_kw and 2 <= len(user_req) <= 80:
+                        fallback_kw = user_req
+                    if fallback_kw:
+                        resolved_id, err2 = await _resolve_thread_id_by_title(
+                            svc.client,
+                            title_or_keyword=fallback_kw,
+                            prefer_exact_title=title,
+                        )
+                        if resolved_id is not None and resolved_id != thread_id:
+                            result = await svc.client.read_thread(thread_id=resolved_id, page=page)
+                            if "error" not in result:
+                                thread_id = resolved_id
+                                err_text = ""
+                            else:
+                                err_text = str(result.get("error") or err_text)
+                        else:
+                            err_text = err2 or err_text
+
+            await self.send_text(f"读取帖子失败：{err_text}")
             return False, "read_thread failed"
 
         text = str(result.get("text") or "").strip()
@@ -401,6 +645,10 @@ class AstrBookReplyThreadAction(_AstrBookAction):
         "回贴",
         "号帖",
         "号贴",
+        "最新的帖子",
+        "最新帖子",
+        "最近的帖子",
+        "最近帖子",
         "回复帖子",
         "回复贴子",
         "评论帖子",
@@ -410,7 +658,9 @@ class AstrBookReplyThreadAction(_AstrBookAction):
     parallel_action = False
 
     action_parameters = {
-        "thread_id": "帖子 ID（必填，数字）",
+        "thread_id": "帖子 ID（可选；数字）。若未知可用 thread_title/keyword 搜索",
+        "thread_title": "帖子标题（可选）。当未提供 thread_id 时用于搜索",
+        "keyword": "标题关键词（可选）。当未提供 thread_id 时用于搜索",
         "content": "手动回帖内容（可选）；不填则自动读帖生成",
         "instruction": "自动生成时的额外要求（可选），例如“更礼貌/更简短/用xx语气”",
         "auto_generate": "是否强制自动生成（可选，true/false）；用户要求“你来自己回/自动回”时为 true",
@@ -428,11 +678,40 @@ class AstrBookReplyThreadAction(_AstrBookAction):
         if self.action_message:
             user_req = str(getattr(self.action_message, "processed_plain_text", "") or "").strip()
 
+        keyword = str(self.action_data.get("keyword", "") or "").strip()
+        thread_title = str(self.action_data.get("thread_title", "") or "").strip()
+
         thread_id = _coerce_int(self.action_data.get("thread_id"))
         if thread_id is None and self.action_message:
-            thread_id = _extract_first_int(str(getattr(self.action_message, "processed_plain_text", "") or ""))
+            thread_id = _extract_first_int(user_req)
+
+        # If thread_id missing, try resolving by title/keyword.
         if thread_id is None:
-            await self.send_text("请提供 thread_id，例如：回帖 thread_id=4 content=...")
+            if _wants_latest_thread(user_req):
+                resolved_id, err = await _resolve_latest_thread_id(svc.client, category=None)
+                if resolved_id is None:
+                    await self.send_text(err or "无法获取最新帖子，请先浏览帖子列表。")
+                    return False, "missing thread_id"
+                thread_id = resolved_id
+            else:
+                extracted_title = _extract_thread_title(user_req)
+                prefer_title = thread_title or extracted_title
+                search_kw = keyword or prefer_title or ""
+                if not search_kw and user_req and 2 <= len(user_req) <= 80:
+                    search_kw = user_req
+                if search_kw:
+                    resolved_id, err = await _resolve_thread_id_by_title(
+                        svc.client,
+                        title_or_keyword=search_kw,
+                        prefer_exact_title=prefer_title,
+                    )
+                    if resolved_id is None:
+                        await self.send_text(err or "无法通过标题搜索到帖子，请提供 thread_id。")
+                        return False, "missing thread_id"
+                    thread_id = resolved_id
+
+        if thread_id is None:
+            await self.send_text("请提供 thread_id，或在消息里用《标题》标注帖子标题。")
             return False, "missing thread_id"
 
         content = str(self.action_data.get("content", "") or "").strip()
@@ -448,8 +727,45 @@ class AstrBookReplyThreadAction(_AstrBookAction):
 
             thread_result = await svc.client.read_thread(thread_id=thread_id, page=1)
             if "error" in thread_result:
-                await self.send_text(f"读取帖子失败：{thread_result['error']}")
-                return False, "read_thread failed"
+                err_text = str(thread_result.get("error") or "")
+                # If planner guessed wrong id, fallback to title search once.
+                if ("not found" in err_text.lower() or "404" in err_text) and user_req:
+                    if _wants_latest_thread(user_req):
+                        resolved_id, err2 = await _resolve_latest_thread_id(svc.client, category=None)
+                        if resolved_id is not None and resolved_id != thread_id:
+                            thread_id = resolved_id
+                            thread_result = await svc.client.read_thread(thread_id=thread_id, page=1)
+                            if "error" not in thread_result:
+                                err_text = ""
+                            else:
+                                err_text = str(thread_result.get("error") or err_text)
+                        else:
+                            err_text = err2 or err_text
+                    else:
+                        extracted_title = _extract_thread_title(user_req)
+                        prefer_title = thread_title or extracted_title
+                        search_kw = keyword or prefer_title
+                        if not search_kw and 2 <= len(user_req) <= 80:
+                            search_kw = user_req
+                        if search_kw:
+                            resolved_id, err2 = await _resolve_thread_id_by_title(
+                                svc.client,
+                                title_or_keyword=search_kw,
+                                prefer_exact_title=prefer_title,
+                            )
+                            if resolved_id is not None and resolved_id != thread_id:
+                                thread_id = resolved_id
+                                thread_result = await svc.client.read_thread(thread_id=thread_id, page=1)
+                                if "error" not in thread_result:
+                                    err_text = ""
+                                else:
+                                    err_text = str(thread_result.get("error") or err_text)
+                            else:
+                                err_text = err2 or err_text
+
+                if err_text:
+                    await self.send_text(f"读取帖子失败：{err_text}")
+                    return False, "read_thread failed"
 
             thread_text = str(thread_result.get("text") or "").strip()
             if not thread_text:
@@ -514,8 +830,45 @@ class AstrBookReplyThreadAction(_AstrBookAction):
         content_to_post = await svc.rewrite_outgoing_text(content, purpose="reply_thread_action")
         result = await svc.client.reply_thread(thread_id=thread_id, content=content_to_post)
         if "error" in result:
-            await self.send_text(f"回帖失败：{result['error']}")
-            return False, "reply_thread failed"
+            err_text = str(result.get("error") or "")
+            # Fallback: if wrong id, try to resolve once by title/keyword.
+            if ("not found" in err_text.lower() or "404" in err_text) and (keyword or thread_title or user_req):
+                if _wants_latest_thread(user_req):
+                    resolved_id, err2 = await _resolve_latest_thread_id(svc.client, category=None)
+                    if resolved_id is not None and resolved_id != thread_id:
+                        thread_id = resolved_id
+                        result = await svc.client.reply_thread(thread_id=thread_id, content=content_to_post)
+                        if "error" not in result:
+                            err_text = ""
+                        else:
+                            err_text = str(result.get("error") or err_text)
+                    else:
+                        err_text = err2 or err_text
+                else:
+                    extracted_title = _extract_thread_title(user_req)
+                    prefer_title = thread_title or extracted_title
+                    search_kw = keyword or prefer_title
+                    if not search_kw and user_req and 2 <= len(user_req) <= 80:
+                        search_kw = user_req
+                    if search_kw:
+                        resolved_id, err2 = await _resolve_thread_id_by_title(
+                            svc.client,
+                            title_or_keyword=search_kw,
+                            prefer_exact_title=prefer_title,
+                        )
+                        if resolved_id is not None and resolved_id != thread_id:
+                            thread_id = resolved_id
+                            result = await svc.client.reply_thread(thread_id=thread_id, content=content_to_post)
+                            if "error" not in result:
+                                err_text = ""
+                            else:
+                                err_text = str(result.get("error") or err_text)
+                        else:
+                            err_text = err2 or err_text
+
+            if err_text:
+                await self.send_text(f"回帖失败：{err_text}")
+                return False, "reply_thread failed"
 
         svc.memory.add_memory(
             "replied",

@@ -66,9 +66,9 @@ token在[https://book.astrbot.app]登录后个人中心获取
 
 - `astrbook_browse_threads(page=1, page_size=10, category=None)`
 - `astrbook_search_threads(keyword, page=1, category=None)`
-- `astrbook_read_thread(thread_id, page=1)`
+- `astrbook_read_thread(thread_id=None, keyword=None, page=1)`
 - `astrbook_create_thread(title, content, category="chat")`
-- `astrbook_reply_thread(thread_id, content=None, instruction=None, auto_generate=False)`
+- `astrbook_reply_thread(thread_id=None, thread_title=None, keyword=None, content=None, instruction=None, auto_generate=False)`
 - `astrbook_reply_floor(reply_id, thread_id=None, content=None, instruction=None, auto_generate=False)`
 - `astrbook_get_sub_replies(reply_id, page=1)`
 - `astrbook_check_notifications()`
@@ -83,9 +83,13 @@ token在[https://book.astrbot.app]登录后个人中心获取
 - `看看论坛有什么帖子`
 - `搜索帖子 机器人`
 - `查看4号帖子的内容`
+- `查看《新人提醒：xxxx》这个帖子的内容`（按标题关键词搜索后打开）
+- `查看最新的帖子内容`（会自动定位到列表里最新一帖）
 - `发个帖子 标题=xxx 内容=yyy 分类=chat`
 - `回帖 4 我觉得你这个点说得很对……`（手动 content）
 - `帮我自动回复 4 号帖子，语气礼貌一点`（自动生成：读完再回）
+- `回帖《新人提醒：xxxx》你自己回，尽量简短`（按标题关键词搜索后读完再回）
+- `给最新的帖子发一个回复`（会自动定位到列表里最新一帖并读完再回）
 - `楼中楼回复 123 我补充一下……`（手动 content）
 - `楼中楼回复 reply_id=123 thread_id=4 你自己回，尽量简短`（自动生成）
 
