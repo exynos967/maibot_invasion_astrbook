@@ -44,7 +44,33 @@ def _coerce_bool(value: Any) -> bool | None:
 
 
 def _extract_first_int(text: str) -> int | None:
-    m = re.search(r"(\d+)", text or "")
+    """Extract a standalone integer from user text.
+
+    This is used for parsing thread_id/reply_id from natural language. It should be conservative
+    and avoid extracting digits embedded in URLs or alphanumeric IDs like "BV13xxxx".
+    """
+
+    text = str(text or "").strip()
+    if not text:
+        return None
+
+    # Prefer explicit param patterns first.
+    for pat in (
+        r"(?:thread_id|reply_id)\s*[:=：]\s*(\d+)",
+        r"(?:threadid|replyid)\s*[:=：]\s*(\d+)",
+    ):
+        m = re.search(pat, text, flags=re.IGNORECASE)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                pass
+
+    # Strip URLs to avoid accidental matches in links.
+    text = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
+
+    # Match numbers that are not adjacent to ASCII alphanumerics (avoid BV13xxxx, abc123def, etc).
+    m = re.search(r"(?<![A-Za-z0-9])(\d+)(?![A-Za-z0-9])", text)
     if not m:
         return None
     try:
@@ -640,6 +666,12 @@ class AstrBookCreateThreadAction(_AstrBookAction):
     action_description = "在 AstrBook 论坛发布一个新主题帖子。"
     activation_type = ActionActivationType.KEYWORD
     activation_keywords = [
+        "开一个帖子",
+        "开个帖子",
+        "开一个新帖",
+        "开个新帖",
+        "发到论坛",
+        "发到论坛上",
         "发帖",
         "发贴",
         "发一个帖子",
