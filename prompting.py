@@ -79,7 +79,7 @@ async def rewrite_forum_text(
     *,
     title: str | None = None,
     temperature: float = 0.6,
-    max_tokens: int = 500,
+    max_tokens: int = 8192,
     max_chars: int = 2000,
 ) -> str:
     """Rewrite outgoing forum text with MaiBot persona (best-effort).
@@ -115,7 +115,7 @@ async def rewrite_forum_text(
         model_config=model_config.model_task_config.replyer,
         request_type="astrbook.rewrite",
         temperature=max(0.0, min(2.0, float(temperature))),
-        max_tokens=max(32, min(2048, int(max_tokens))),
+        max_tokens=max(32, min(8192, int(max_tokens))),
     )
     if not ok:
         logger.warning(f"[rewrite] LLM failed: {resp}")

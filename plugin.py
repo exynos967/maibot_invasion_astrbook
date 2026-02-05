@@ -103,7 +103,7 @@ class AstrBookForumPlugin(BasePlugin):
 
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(type=str, default="1.0.3", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.0.4", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=False, description="是否启用插件"),
         },
         "astrbook": {
@@ -149,12 +149,26 @@ class AstrBookForumPlugin(BasePlugin):
             "max_auto_replies_per_minute": ConfigField(
                 type=int, default=3, description="每分钟最多自动回复次数", min=0, max=60
             ),
+            "reply_max_tokens": ConfigField(
+                type=int,
+                default=8192,
+                description="自动回帖/自动生成回复最大输出 tokens",
+                min=64,
+                max=8192,
+            ),
         },
         "browse": {
             "enabled": ConfigField(type=bool, default=True, description="是否启用定时逛帖"),
             "browse_interval_sec": ConfigField(type=int, default=3600, description="逛帖间隔（秒）", min=30),
             "max_replies_per_session": ConfigField(
                 type=int, default=1, description="每次逛帖最多回帖次数", min=0, max=5
+            ),
+            "browse_max_tokens": ConfigField(
+                type=int,
+                default=8192,
+                description="逛帖决策/逛帖回帖生成最大输出 tokens",
+                min=64,
+                max=8192,
             ),
             "categories_allowlist": ConfigField(
                 type=list,
@@ -234,7 +248,13 @@ class AstrBookForumPlugin(BasePlugin):
             "temperature": ConfigField(
                 type=float, default=0.7, description="发帖生成温度（0.0-2.0）", min=0.0, max=2.0, step=0.05
             ),
-            "max_tokens": ConfigField(type=int, default=800, description="发帖生成最大输出 tokens", min=64, max=2048),
+            "max_tokens": ConfigField(
+                type=int,
+                default=8192,
+                description="发帖生成最大输出 tokens",
+                min=64,
+                max=8192,
+            ),
         },
         "writing": {
             "enabled": ConfigField(
@@ -252,10 +272,10 @@ class AstrBookForumPlugin(BasePlugin):
             ),
             "max_tokens": ConfigField(
                 type=int,
-                default=500,
+                default=8192,
                 description="文案润色最大输出 tokens",
                 min=32,
-                max=2048,
+                max=8192,
             ),
             "max_chars": ConfigField(
                 type=int,
@@ -280,6 +300,7 @@ class AstrBookForumPlugin(BasePlugin):
         """Plugin-specific config migration.
 
         - v1.0.2 -> v1.0.3: posting.post_interval_sec (seconds) -> posting.post_interval_min (minutes)
+        - v1.0.3 -> v1.0.4: bump max_tokens defaults to 8192 (posting/writing) and add browse/realtime max_tokens
         """
 
         migrated = super()._migrate_config_values(old_config, new_config)
@@ -287,22 +308,43 @@ class AstrBookForumPlugin(BasePlugin):
         try:
             old_posting = old_config.get("posting", {}) if isinstance(old_config.get("posting"), dict) else {}
             old_interval_sec = old_posting.get("post_interval_sec", None)
-            if old_interval_sec is None:
-                return migrated
+            if old_interval_sec is not None:
+                interval_min = int(int(old_interval_sec) / 60)
+                # Keep behavior close to the old one.
+                if interval_min < 5:
+                    interval_min = 5
+                if interval_min > 10080:
+                    interval_min = 10080
 
-            interval_min = int(int(old_interval_sec) / 60)
-            # Keep behavior close to the old one.
-            if interval_min < 5:
-                interval_min = 5
-            if interval_min > 10080:
-                interval_min = 10080
-
-            posting = migrated.get("posting", {}) if isinstance(migrated.get("posting"), dict) else {}
-            posting["post_interval_min"] = interval_min
-            migrated["posting"] = posting
+                posting = migrated.get("posting", {}) if isinstance(migrated.get("posting"), dict) else {}
+                posting["post_interval_min"] = interval_min
+                migrated["posting"] = posting
         except Exception:
             # Best-effort migration.
-            return migrated
+            pass
+
+        # Update max_tokens defaults (only when user hasn't changed them).
+        try:
+            old_posting = old_config.get("posting", {}) if isinstance(old_config.get("posting"), dict) else {}
+            posting = migrated.get("posting", {}) if isinstance(migrated.get("posting"), dict) else {}
+            if "max_tokens" in posting:
+                old_val = old_posting.get("max_tokens", None)
+                if old_val is None or int(old_val) in {800, 2048}:
+                    posting["max_tokens"] = 8192
+            migrated["posting"] = posting
+        except Exception:
+            pass
+
+        try:
+            old_writing = old_config.get("writing", {}) if isinstance(old_config.get("writing"), dict) else {}
+            writing = migrated.get("writing", {}) if isinstance(migrated.get("writing"), dict) else {}
+            if "max_tokens" in writing:
+                old_val = old_writing.get("max_tokens", None)
+                if old_val is None or int(old_val) in {500, 2048}:
+                    writing["max_tokens"] = 8192
+            migrated["writing"] = writing
+        except Exception:
+            pass
 
         return migrated
 

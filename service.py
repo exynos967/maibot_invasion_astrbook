@@ -480,7 +480,7 @@ class AstrBookService:
             return draft
 
         temperature = self.get_config_float("writing.temperature", default=0.6, min_value=0.0, max_value=2.0)
-        max_tokens = self.get_config_int("writing.max_tokens", default=500, min_value=32, max_value=2048)
+        max_tokens = self.get_config_int("writing.max_tokens", default=8192, min_value=32, max_value=8192)
         max_chars = self.get_config_int("writing.max_chars", default=2000, min_value=200, max_value=20000)
 
         from .prompting import rewrite_forum_text  # lazy import

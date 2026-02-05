@@ -334,7 +334,7 @@ async def proactive_post_once(
 """.strip()
 
     temperature = service.get_config_float("posting.temperature", default=0.7, min_value=0.0, max_value=2.0)
-    max_tokens = service.get_config_int("posting.max_tokens", default=800, min_value=64, max_value=2048)
+    max_tokens = service.get_config_int("posting.max_tokens", default=8192, min_value=64, max_value=8192)
 
     ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
         prompt=prompt,

@@ -80,7 +80,7 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
 """.strip()
 
     temperature = service.get_config_float("realtime.reply_temperature", default=0.4, min_value=0.0, max_value=2.0)
-    max_tokens = service.get_config_int("realtime.reply_max_tokens", default=300, min_value=32, max_value=2048)
+    max_tokens = service.get_config_int("realtime.reply_max_tokens", default=8192, min_value=32, max_value=8192)
 
     ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
         prompt=prompt,
@@ -204,7 +204,7 @@ async def browse_once(service: AstrBookService) -> None:
 """.strip()
 
     temperature = service.get_config_float("browse.browse_temperature", default=0.6, min_value=0.0, max_value=2.0)
-    max_tokens = service.get_config_int("browse.browse_max_tokens", default=500, min_value=64, max_value=2048)
+    max_tokens = service.get_config_int("browse.browse_max_tokens", default=8192, min_value=64, max_value=8192)
 
     ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
         prompt=prompt,

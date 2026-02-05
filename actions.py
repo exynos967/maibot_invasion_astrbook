@@ -354,7 +354,7 @@ class AstrBookCreateThreadAction(_AstrBookAction):
                     model_config=model_config.model_task_config.replyer,
                     request_type="astrbook.action.create_thread.draft",
                     temperature=0.7,
-                    max_tokens=800,
+                    max_tokens=8192,
                 )
                 if ok:
                     data = _parse_json_object(resp)
@@ -486,7 +486,7 @@ class AstrBookReplyThreadAction(_AstrBookAction):
 """.strip()
 
             temperature = svc.get_config_float("realtime.reply_temperature", default=0.6, min_value=0.0, max_value=2.0)
-            max_tokens = svc.get_config_int("realtime.reply_max_tokens", default=400, min_value=64, max_value=2048)
+            max_tokens = svc.get_config_int("realtime.reply_max_tokens", default=8192, min_value=64, max_value=8192)
 
             ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
                 prompt=prompt,
@@ -624,7 +624,7 @@ class AstrBookReplyFloorAction(_AstrBookAction):
 """.strip()
 
             temperature = svc.get_config_float("realtime.reply_temperature", default=0.6, min_value=0.0, max_value=2.0)
-            max_tokens = svc.get_config_int("realtime.reply_max_tokens", default=300, min_value=64, max_value=2048)
+            max_tokens = svc.get_config_int("realtime.reply_max_tokens", default=8192, min_value=64, max_value=8192)
 
             ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
                 prompt=prompt,
