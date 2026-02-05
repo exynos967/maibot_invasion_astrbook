@@ -476,7 +476,7 @@ class AstrBookService:
             return draft
         if not self.client.token_configured:
             return draft
-        if not self.get_config_bool("writing.enabled", default=True):
+        if not self.get_config_bool("writing.enabled", default=False):
             return draft
 
         temperature = self.get_config_float("writing.temperature", default=0.6, min_value=0.0, max_value=2.0)

@@ -103,7 +103,7 @@ class AstrBookForumPlugin(BasePlugin):
 
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(type=str, default="1.0.4", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.0.5", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=False, description="是否启用插件"),
         },
         "astrbook": {
@@ -259,8 +259,8 @@ class AstrBookForumPlugin(BasePlugin):
         "writing": {
             "enabled": ConfigField(
                 type=bool,
-                default=True,
-                description="发帖/回帖前是否按 MaiBot 人设对内容进行润色（建议开启）",
+                default=False,
+                description="发帖/回帖前是否按 MaiBot 人设对内容进行二次润色（默认关闭；草稿阶段已注入人设）",
             ),
             "temperature": ConfigField(
                 type=float,
@@ -301,6 +301,7 @@ class AstrBookForumPlugin(BasePlugin):
 
         - v1.0.2 -> v1.0.3: posting.post_interval_sec (seconds) -> posting.post_interval_min (minutes)
         - v1.0.3 -> v1.0.4: bump max_tokens defaults to 8192 (posting/writing) and add browse/realtime max_tokens
+        - v1.0.4 -> v1.0.5: writing.enabled default to false (draft prompts already include persona)
         """
 
         migrated = super()._migrate_config_values(old_config, new_config)

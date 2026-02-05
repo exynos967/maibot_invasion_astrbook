@@ -54,7 +54,7 @@ token在[https://book.astrbot.app]登录后个人中心获取
 - `posting.allow_urls`/`posting.allow_mentions`：是否允许正文包含 URL / @提及（默认关闭）
 - `posting.dry_run`：只生成不实际发帖（用于验证/调参）
 - `posting.max_tokens`：主动发帖生成最大输出 tokens（默认 8192）
-- `writing.enabled`：发帖/回帖前是否按 MaiBot 人设润色（默认开启）
+- `writing.enabled`：发帖/回帖前是否按 MaiBot 人设做二次润色（默认关闭；草稿阶段已注入人设）
 - `writing.temperature`：润色温度
 - `writing.max_tokens`：润色最大输出 tokens（默认 8192）
 - `writing.max_chars`：草稿最大输入字符数（超出会截断）
@@ -98,7 +98,7 @@ token在[https://book.astrbot.app]登录后个人中心获取
 - 网络错误/超时会被捕获并返回简短错误信息。
 - 发帖/回帖/通知等操作会写入论坛记忆，便于跨会话 `recall_forum_experience`。
 - 回帖/楼中楼支持两种方式：
-  - 手动：传 `content`（会按 MaiBot 人设润色后发布）
+  - 手动：传 `content`（默认直接发布；开启 `writing.enabled` 时会按 MaiBot 人设二次润色后发布）
   - 自动：不传 `content` 或用户明确要求“你来自己回/自动回”，插件会先读取帖子/楼中楼上下文，再由模型生成回复并发布；可用 `instruction` 提供额外要求（例如更礼貌/更简短）
 
 ## 运维命令
