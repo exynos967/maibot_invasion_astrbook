@@ -727,8 +727,7 @@ class AstrBookCreateThreadAction(_AstrBookAction):
             await self.send_text("发帖失败：content 至少 5 字符。")
             return False, "invalid content"
 
-        content_to_post = await svc.rewrite_outgoing_text(content, purpose="create_thread_action", title=title)
-        result = await svc.client.create_thread(title=title, content=content_to_post, category=category)
+        result = await svc.client.create_thread(title=title, content=content, category=category)
         if "error" in result:
             await self.send_text(f"发帖失败：{result['error']}")
             return False, "create_thread failed"
@@ -965,8 +964,7 @@ class AstrBookReplyThreadAction(_AstrBookAction):
 
             content = draft
 
-        content_to_post = await svc.rewrite_outgoing_text(content, purpose="reply_thread_action")
-        result = await svc.client.reply_thread(thread_id=thread_id, content=content_to_post)
+        result = await svc.client.reply_thread(thread_id=thread_id, content=content)
         if "error" in result:
             err_text = str(result.get("error") or "")
             # Fallback: if wrong id, try to resolve once by title/keyword.
@@ -988,7 +986,7 @@ class AstrBookReplyThreadAction(_AstrBookAction):
                             if not isinstance(tid, int) or tid == thread_id:
                                 continue
 
-                            trial = await svc.client.reply_thread(thread_id=tid, content=content_to_post)
+                            trial = await svc.client.reply_thread(thread_id=tid, content=content)
                             if "error" not in trial:
                                 thread_id = tid
                                 result = trial
@@ -1018,7 +1016,7 @@ class AstrBookReplyThreadAction(_AstrBookAction):
                         )
                         if resolved_id is not None and resolved_id != thread_id:
                             thread_id = resolved_id
-                            result = await svc.client.reply_thread(thread_id=thread_id, content=content_to_post)
+                            result = await svc.client.reply_thread(thread_id=thread_id, content=content)
                             if "error" not in result:
                                 err_text = ""
                             else:
@@ -1032,11 +1030,11 @@ class AstrBookReplyThreadAction(_AstrBookAction):
 
         svc.memory.add_memory(
             "replied",
-            f"我回复了帖子ID:{thread_id}: {content_to_post[:60]}",
+            f"我回复了帖子ID:{thread_id}: {content[:60]}",
             metadata={"thread_id": thread_id},
         )
         prefix = "已自动生成并回帖" if auto_mode else "回帖成功"
-        await self.send_text(f"{prefix}（thread_id={thread_id}）\n{_truncate(content_to_post, 1200)}")
+        await self.send_text(f"{prefix}（thread_id={thread_id}）\n{_truncate(content, 1200)}")
         return True, "replied thread"
 
 
@@ -1162,19 +1160,18 @@ class AstrBookReplyFloorAction(_AstrBookAction):
 
             content = draft
 
-        content_to_post = await svc.rewrite_outgoing_text(content, purpose="reply_floor_action")
-        result = await svc.client.reply_floor(reply_id=reply_id, content=content_to_post)
+        result = await svc.client.reply_floor(reply_id=reply_id, content=content)
         if "error" in result:
             await self.send_text(f"楼中楼回复失败：{result['error']}")
             return False, "reply_floor failed"
 
         svc.memory.add_memory(
             "replied",
-            f"我进行了楼中楼回复(reply_id={reply_id}): {content_to_post[:60]}",
+            f"我进行了楼中楼回复(reply_id={reply_id}): {content[:60]}",
             metadata={"reply_id": reply_id},
         )
         prefix = "已自动生成并楼中楼回复" if auto_mode else "楼中楼回复成功"
-        await self.send_text(f"{prefix}（reply_id={reply_id}）\n{_truncate(content_to_post, 1200)}")
+        await self.send_text(f"{prefix}（reply_id={reply_id}）\n{_truncate(content, 1200)}")
         return True, "replied floor"
 
 

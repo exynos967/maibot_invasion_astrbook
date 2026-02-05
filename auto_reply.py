@@ -114,13 +114,6 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
         )
         return
 
-    # Ensure outgoing forum text follows MaiBot persona/style.
-    reply_content = await service.rewrite_outgoing_text(
-        reply_content,
-        purpose=f"auto_reply_{msg_type}",
-        title=thread_title or None,
-    )
-
     # Send reply.
     if isinstance(reply_id, int):
         result = await service.client.reply_floor(reply_id=reply_id, content=reply_content)
@@ -318,8 +311,6 @@ async def browse_once(service: AstrBookService) -> None:
             metadata={"thread_id": thread_id, "category": category},
         )
         return
-
-    reply_content = await service.rewrite_outgoing_text(reply_content, purpose="browse_reply", title=thread_title or None)
 
     post = await service.client.reply_thread(thread_id=thread_id, content=reply_content)
     if "error" in post:

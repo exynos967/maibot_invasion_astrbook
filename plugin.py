@@ -97,13 +97,12 @@ class AstrBookForumPlugin(BasePlugin):
         "realtime": "实时通知（WebSocket）",
         "browse": "定时逛帖",
         "posting": "定时主动发帖（风控）",
-        "writing": "发帖/回帖文案处理（人设）",
         "memory": "论坛记忆",
     }
 
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(type=str, default="1.0.5", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.0.6", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=False, description="是否启用插件"),
         },
         "astrbook": {
@@ -256,35 +255,6 @@ class AstrBookForumPlugin(BasePlugin):
                 max=8192,
             ),
         },
-        "writing": {
-            "enabled": ConfigField(
-                type=bool,
-                default=False,
-                description="发帖/回帖前是否按 MaiBot 人设对内容进行二次润色（默认关闭；草稿阶段已注入人设）",
-            ),
-            "temperature": ConfigField(
-                type=float,
-                default=0.6,
-                description="文案润色温度（0.0-2.0）",
-                min=0.0,
-                max=2.0,
-                step=0.05,
-            ),
-            "max_tokens": ConfigField(
-                type=int,
-                default=8192,
-                description="文案润色最大输出 tokens",
-                min=32,
-                max=8192,
-            ),
-            "max_chars": ConfigField(
-                type=int,
-                default=2000,
-                description="草稿最大输入字符数（超出会截断）",
-                min=200,
-                max=20000,
-            ),
-        },
         "memory": {
             "max_items": ConfigField(type=int, default=50, description="论坛记忆最大保存条数", min=1, max=5000),
             "storage_path": ConfigField(
@@ -300,8 +270,8 @@ class AstrBookForumPlugin(BasePlugin):
         """Plugin-specific config migration.
 
         - v1.0.2 -> v1.0.3: posting.post_interval_sec (seconds) -> posting.post_interval_min (minutes)
-        - v1.0.3 -> v1.0.4: bump max_tokens defaults to 8192 (posting/writing) and add browse/realtime max_tokens
-        - v1.0.4 -> v1.0.5: writing.enabled default to false (draft prompts already include persona)
+        - v1.0.3 -> v1.0.4: bump max_tokens defaults to 8192 (posting) and add browse/realtime max_tokens
+        - v1.0.5 -> v1.0.6: remove writing.* config and "rewrite/polish" stage (always post directly)
         """
 
         migrated = super()._migrate_config_values(old_config, new_config)
@@ -333,17 +303,6 @@ class AstrBookForumPlugin(BasePlugin):
                 if old_val is None or int(old_val) in {800, 2048}:
                     posting["max_tokens"] = 8192
             migrated["posting"] = posting
-        except Exception:
-            pass
-
-        try:
-            old_writing = old_config.get("writing", {}) if isinstance(old_config.get("writing"), dict) else {}
-            writing = migrated.get("writing", {}) if isinstance(migrated.get("writing"), dict) else {}
-            if "max_tokens" in writing:
-                old_val = old_writing.get("max_tokens", None)
-                if old_val is None or int(old_val) in {500, 2048}:
-                    writing["max_tokens"] = 8192
-            migrated["writing"] = writing
         except Exception:
             pass
 

@@ -371,8 +371,6 @@ async def proactive_post_once(
     if len(content) < 20:
         return ProactivePostResult(status="skipped", reason="content too short", title=title, category=category)
 
-    content = await service.rewrite_outgoing_text(content, purpose="proactive_post", title=title or None)
-
     allow_urls = service.get_config_bool("posting.allow_urls", default=False)
     allow_mentions = service.get_config_bool("posting.allow_mentions", default=False)
 

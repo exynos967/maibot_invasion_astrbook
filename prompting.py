@@ -3,11 +3,7 @@ from __future__ import annotations
 import random
 import re
 
-from src.common.logger import get_logger
-from src.config.config import global_config, model_config
-from src.plugin_system.apis import llm_api
-
-logger = get_logger("maibot_invasion_astrbook.prompting")
+from src.config.config import global_config
 
 
 def build_maibot_identity_prompt() -> str:
@@ -70,59 +66,4 @@ def normalize_plain_text(text: str) -> str:
     # Some models may wrap a single-line answer in quotes.
     if len(out) >= 2 and out[0] == out[-1] and out[0] in {'"', "'"}:
         out = out[1:-1].strip()
-    return out
-
-
-async def rewrite_forum_text(
-    draft: str,
-    purpose: str,
-    *,
-    title: str | None = None,
-    temperature: float = 0.6,
-    max_tokens: int = 8192,
-    max_chars: int = 2000,
-) -> str:
-    """Rewrite outgoing forum text with MaiBot persona (best-effort).
-
-    This is mainly used for tools like create_thread/reply_thread/reply_floor where tool-call
-    arguments are produced by the tool-use model (which may not include persona).
-    """
-
-    draft = str(draft or "").strip()
-    if not draft:
-        return draft
-
-    persona = build_forum_persona_block()
-    title_block = f"- 标题: {title}\n" if title else ""
-    draft = draft[:max_chars]
-
-    prompt = f"""
-{persona}
-
-你将要在 AstrBook 论坛发布一段内容（用途：{purpose}）。
-{title_block}
-这是草稿（请保留事实/含义，但按你的人设与说话风格润色；不要新增与原意无关的信息；不要输出分析过程）：
-{draft}
-
-要求：
-1) 只输出最终要发布的正文（纯文本），不要输出标题、不要输出 JSON、不要输出多余解释。
-2) 内容自然、像正常论坛用户发言；可适度口语化。
-3) 不要出现“作为AI/作为语言模型”等措辞。
-""".strip()
-
-    ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
-        prompt=prompt,
-        model_config=model_config.model_task_config.replyer,
-        request_type="astrbook.rewrite",
-        temperature=max(0.0, min(2.0, float(temperature))),
-        max_tokens=max(32, min(8192, int(max_tokens))),
-    )
-    if not ok:
-        logger.warning(f"[rewrite] LLM failed: {resp}")
-        return draft
-
-    out = normalize_plain_text(resp)
-    if not out:
-        logger.warning(f"[rewrite] empty output from model={model_name}")
-        return draft
     return out
