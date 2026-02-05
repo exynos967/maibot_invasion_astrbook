@@ -274,7 +274,9 @@ async def proactive_post_once(
         return ProactivePostResult(status="skipped", reason=f"probability not hit (post_probability={probability:.2f})")
 
     now = time.time()
-    if not service.post_rate_limiter.allow(now=now):
+    # Manual/admin trigger (`force=True`) is allowed to bypass the proactive posting policy
+    # so users can validate the feature without waiting for the next window.
+    if not force and not service.post_rate_limiter.allow(now=now):
         return ProactivePostResult(status="skipped", reason="rate limited by posting policy")
 
     candidate = await build_proactive_post_candidate(service, preferred_stream_id=preferred_stream_id)
