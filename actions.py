@@ -192,28 +192,107 @@ async def _resolve_latest_thread_id(
     *,
     category: str | None = None,
 ) -> Tuple[int | None, str | None]:
-    """Resolve latest thread_id by browsing the first page and parsing."""
+    """Resolve latest thread_id by listing threads (JSON preferred, text fallback)."""
 
-    result = await client.browse_threads(page=1, page_size=10, category=category)
-    if "error" in result:
-        return None, f"获取帖子列表失败：{result['error']}"
+    candidates, err = await _get_latest_thread_candidates(client, category=category)
+    if not candidates:
+        return None, err or "无法获取最新帖子。"
 
-    browse_text = str(result.get("text") or "")
-    items = _extract_threads_from_browse_text(browse_text, limit=10)
-    if not items:
-        return None, "无法从帖子列表解析 thread_id，请先手动浏览帖子列表。"
+    tid = candidates[0].get("id")
+    return (int(tid), None) if isinstance(tid, int) else (None, "无法解析最新 thread_id。")
 
-    # Prefer non-pinned entries if we can detect.
+
+def _extract_thread_items_from_list_result(data: Any) -> list[dict[str, Any]]:
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        for key in ("items", "threads", "data", "results", "list"):
+            value = data.get(key)
+            if isinstance(value, list):
+                items = value
+                break
+        else:
+            items = []
+    else:
+        items = []
+
+    out: list[dict[str, Any]] = []
     for it in items:
-        title = str(it.get("title", "") or "")
-        if "置顶" in title or "pinned" in title.lower():
+        if not isinstance(it, dict):
             continue
-        tid = it.get("id")
-        if isinstance(tid, int):
-            return tid, None
+        tid = it.get("id", None)
+        if tid is None:
+            tid = it.get("thread_id", None)
+        if isinstance(tid, str) and tid.isdigit():
+            try:
+                tid = int(tid)
+            except Exception:
+                tid = None
+        if not isinstance(tid, int):
+            continue
 
-    tid0 = items[0].get("id")
-    return (int(tid0), None) if isinstance(tid0, int) else (None, "无法解析最新 thread_id。")
+        title = str(it.get("title", "") or it.get("thread_title", "") or "").strip()
+        pinned = bool(it.get("is_pinned") or it.get("pinned") or it.get("is_top") or it.get("top"))
+        if "置顶" in title or "pinned" in title.lower():
+            pinned = True
+
+        out.append({"id": tid, "title": title, "pinned": pinned})
+
+    # Deduplicate by id while preserving order.
+    dedup: dict[int, dict[str, Any]] = {}
+    ordered: list[dict[str, Any]] = []
+    for it in out:
+        tid = it.get("id")
+        if not isinstance(tid, int) or tid in dedup:
+            continue
+        dedup[tid] = it
+        ordered.append(it)
+    return ordered
+
+
+async def _get_latest_thread_candidates(
+    client: AstrBookClient,
+    *,
+    category: str | None = None,
+) -> Tuple[list[dict[str, Any]], str | None]:
+    """Get latest thread candidates from list_threads (JSON) or browse_threads(text)."""
+
+    items: list[dict[str, Any]] = []
+
+    try:
+        result = await client.list_threads(page=1, page_size=10, category=category)
+    except Exception as e:
+        result = {"error": str(e)}
+
+    if isinstance(result, dict) and "error" in result:
+        items = []
+    else:
+        items = _extract_thread_items_from_list_result(result)
+
+    if not items:
+        # Fallback to the text output and parse.
+        result2 = await client.browse_threads(page=1, page_size=10, category=category)
+        if isinstance(result2, dict) and "error" in result2:
+            return [], f"获取帖子列表失败：{result2['error']}"
+
+        browse_text = ""
+        if isinstance(result2, dict):
+            browse_text = str(result2.get("text") or "")
+        items = _extract_threads_from_browse_text(browse_text, limit=10)
+        for it in items:
+            title = str(it.get("title", "") or "")
+            if "置顶" in title or "pinned" in title.lower():
+                it["pinned"] = True
+            else:
+                it["pinned"] = False
+
+    if not items:
+        return [], "无法从帖子列表解析 thread_id，请先手动浏览帖子列表。"
+
+    # Prefer non-pinned entries.
+    non_pinned = [it for it in items if not bool(it.get("pinned", False))]
+    pinned = [it for it in items if bool(it.get("pinned", False))]
+    return (non_pinned + pinned), None
 
 
 async def _resolve_thread_id_by_title(
@@ -443,14 +522,21 @@ class AstrBookReadThreadAction(_AstrBookAction):
         if thread_id is None and self.action_message:
             thread_id = _extract_first_int(user_req)
 
+        wants_latest = _wants_latest_thread(user_req)
+        latest_candidates: list[dict[str, Any]] | None = None
+
         # If thread_id missing, try searching by title/keyword.
         if thread_id is None:
-            if _wants_latest_thread(user_req):
-                resolved_id, err = await _resolve_latest_thread_id(svc.client, category=None)
-                if resolved_id is None:
+            if wants_latest:
+                latest_candidates, err = await _get_latest_thread_candidates(svc.client, category=None)
+                if not latest_candidates:
                     await self.send_text(err or "无法获取最新帖子，请先浏览帖子列表。")
                     return False, "missing thread_id"
-                thread_id = resolved_id
+                tid = latest_candidates[0].get("id")
+                if not isinstance(tid, int):
+                    await self.send_text("无法解析最新 thread_id，请先浏览帖子列表。")
+                    return False, "missing thread_id"
+                thread_id = tid
             else:
                 title = _extract_thread_title(user_req)
                 keyword = keyword or (title or "")
@@ -478,17 +564,39 @@ class AstrBookReadThreadAction(_AstrBookAction):
             # Fallback: if thread_id was wrong (planner guessed), try search by title.
             err_text = str(result.get("error") or "")
             if ("not found" in err_text.lower() or "404" in err_text) and user_req:
-                if _wants_latest_thread(user_req):
-                    resolved_id, err2 = await _resolve_latest_thread_id(svc.client, category=None)
-                    if resolved_id is not None and resolved_id != thread_id:
-                        result = await svc.client.read_thread(thread_id=resolved_id, page=page)
-                        if "error" not in result:
-                            thread_id = resolved_id
-                            err_text = ""
-                        else:
-                            err_text = str(result.get("error") or err_text)
+                if wants_latest:
+                    if latest_candidates is None:
+                        latest_candidates, err2 = await _get_latest_thread_candidates(
+                            svc.client, category=None
+                        )
                     else:
+                        err2 = None
+
+                    if not latest_candidates:
                         err_text = err2 or err_text
+                    else:
+                        last_err = err_text
+                        for cand in latest_candidates:
+                            tid = cand.get("id")
+                            if not isinstance(tid, int) or tid == thread_id:
+                                continue
+
+                            trial = await svc.client.read_thread(thread_id=tid, page=page)
+                            if "error" not in trial:
+                                result = trial
+                                thread_id = tid
+                                err_text = ""
+                                break
+
+                            cand_err = str(trial.get("error") or "")
+                            last_err = cand_err or last_err
+                            if "not found" in cand_err.lower() or "404" in cand_err:
+                                continue
+
+                            err_text = cand_err or last_err
+                            break
+                        else:
+                            err_text = last_err
                 else:
                     title = _extract_thread_title(user_req)
                     fallback_kw = keyword or title
@@ -510,8 +618,9 @@ class AstrBookReadThreadAction(_AstrBookAction):
                         else:
                             err_text = err2 or err_text
 
-            await self.send_text(f"读取帖子失败：{err_text}")
-            return False, "read_thread failed"
+            if "error" in result:
+                await self.send_text(f"读取帖子失败：{err_text}")
+                return False, "read_thread failed"
 
         text = str(result.get("text") or "").strip()
         if not text:
@@ -685,14 +794,21 @@ class AstrBookReplyThreadAction(_AstrBookAction):
         if thread_id is None and self.action_message:
             thread_id = _extract_first_int(user_req)
 
+        wants_latest = _wants_latest_thread(user_req)
+        latest_candidates: list[dict[str, Any]] | None = None
+
         # If thread_id missing, try resolving by title/keyword.
         if thread_id is None:
-            if _wants_latest_thread(user_req):
-                resolved_id, err = await _resolve_latest_thread_id(svc.client, category=None)
-                if resolved_id is None:
+            if wants_latest:
+                latest_candidates, err = await _get_latest_thread_candidates(svc.client, category=None)
+                if not latest_candidates:
                     await self.send_text(err or "无法获取最新帖子，请先浏览帖子列表。")
                     return False, "missing thread_id"
-                thread_id = resolved_id
+                tid = latest_candidates[0].get("id")
+                if not isinstance(tid, int):
+                    await self.send_text("无法解析最新 thread_id，请先浏览帖子列表。")
+                    return False, "missing thread_id"
+                thread_id = tid
             else:
                 extracted_title = _extract_thread_title(user_req)
                 prefer_title = thread_title or extracted_title
@@ -730,17 +846,39 @@ class AstrBookReplyThreadAction(_AstrBookAction):
                 err_text = str(thread_result.get("error") or "")
                 # If planner guessed wrong id, fallback to title search once.
                 if ("not found" in err_text.lower() or "404" in err_text) and user_req:
-                    if _wants_latest_thread(user_req):
-                        resolved_id, err2 = await _resolve_latest_thread_id(svc.client, category=None)
-                        if resolved_id is not None and resolved_id != thread_id:
-                            thread_id = resolved_id
-                            thread_result = await svc.client.read_thread(thread_id=thread_id, page=1)
-                            if "error" not in thread_result:
-                                err_text = ""
-                            else:
-                                err_text = str(thread_result.get("error") or err_text)
+                    if wants_latest:
+                        if latest_candidates is None:
+                            latest_candidates, err2 = await _get_latest_thread_candidates(
+                                svc.client, category=None
+                            )
                         else:
+                            err2 = None
+
+                        if not latest_candidates:
                             err_text = err2 or err_text
+                        else:
+                            last_err = err_text
+                            for cand in latest_candidates:
+                                tid = cand.get("id")
+                                if not isinstance(tid, int) or tid == thread_id:
+                                    continue
+
+                                trial = await svc.client.read_thread(thread_id=tid, page=1)
+                                if "error" not in trial:
+                                    thread_id = tid
+                                    thread_result = trial
+                                    err_text = ""
+                                    break
+
+                                cand_err = str(trial.get("error") or "")
+                                last_err = cand_err or last_err
+                                if "not found" in cand_err.lower() or "404" in cand_err:
+                                    continue
+
+                                err_text = cand_err or last_err
+                                break
+                            else:
+                                err_text = last_err
                     else:
                         extracted_title = _extract_thread_title(user_req)
                         prefer_title = thread_title or extracted_title
@@ -833,17 +971,39 @@ class AstrBookReplyThreadAction(_AstrBookAction):
             err_text = str(result.get("error") or "")
             # Fallback: if wrong id, try to resolve once by title/keyword.
             if ("not found" in err_text.lower() or "404" in err_text) and (keyword or thread_title or user_req):
-                if _wants_latest_thread(user_req):
-                    resolved_id, err2 = await _resolve_latest_thread_id(svc.client, category=None)
-                    if resolved_id is not None and resolved_id != thread_id:
-                        thread_id = resolved_id
-                        result = await svc.client.reply_thread(thread_id=thread_id, content=content_to_post)
-                        if "error" not in result:
-                            err_text = ""
-                        else:
-                            err_text = str(result.get("error") or err_text)
+                if wants_latest:
+                    if latest_candidates is None:
+                        latest_candidates, err2 = await _get_latest_thread_candidates(
+                            svc.client, category=None
+                        )
                     else:
+                        err2 = None
+
+                    if not latest_candidates:
                         err_text = err2 or err_text
+                    else:
+                        last_err = err_text
+                        for cand in latest_candidates:
+                            tid = cand.get("id")
+                            if not isinstance(tid, int) or tid == thread_id:
+                                continue
+
+                            trial = await svc.client.reply_thread(thread_id=tid, content=content_to_post)
+                            if "error" not in trial:
+                                thread_id = tid
+                                result = trial
+                                err_text = ""
+                                break
+
+                            cand_err = str(trial.get("error") or "")
+                            last_err = cand_err or last_err
+                            if "not found" in cand_err.lower() or "404" in cand_err:
+                                continue
+
+                            err_text = cand_err or last_err
+                            break
+                        else:
+                            err_text = last_err
                 else:
                     extracted_title = _extract_thread_title(user_req)
                     prefer_title = thread_title or extracted_title

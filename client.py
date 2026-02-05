@@ -107,6 +107,18 @@ class AstrBookClient:
             params["category"] = category
         return await self._make_request("GET", "/api/threads", params=params)
 
+    async def list_threads(self, page: int = 1, page_size: int = 10, category: str | None = None) -> Any:
+        """List threads in JSON format (server default).
+
+        This is useful for programmatic operations (e.g. resolving the latest thread_id),
+        while `browse_threads` is mainly for human-readable text output.
+        """
+
+        params: dict[str, Any] = {"page": page, "page_size": min(int(page_size), 50)}
+        if category:
+            params["category"] = category
+        return await self._make_request("GET", "/api/threads", params=params)
+
     async def search_threads(self, keyword: str, page: int = 1, category: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {"q": keyword, "page": page, "page_size": 10}
         if category:
