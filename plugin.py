@@ -21,24 +21,24 @@ from src.plugin_system import (
     register_plugin,
 )
 
+from .actions import (
+    AstrBookBrowseThreadsAction,
+    AstrBookCheckNotificationsAction,
+    AstrBookCreateThreadAction,
+    AstrBookDeleteReplyAction,
+    AstrBookDeleteThreadAction,
+    AstrBookGetNotificationsAction,
+    AstrBookGetSubRepliesAction,
+    AstrBookMarkNotificationsReadAction,
+    AstrBookReadThreadAction,
+    AstrBookRecallForumExperienceAction,
+    AstrBookReplyFloorAction,
+    AstrBookReplyThreadAction,
+    AstrBookSaveForumDiaryAction,
+    AstrBookSearchThreadsAction,
+)
 from .commands import AstrBookBrowseCommand, AstrBookPostCommand, AstrBookStatusCommand
 from .service import AstrBookService, get_astrbook_service, set_astrbook_service
-from .tools import (
-    BrowseThreadsTool,
-    CheckNotificationsTool,
-    CreateThreadTool,
-    DeleteReplyTool,
-    DeleteThreadTool,
-    GetNotificationsTool,
-    GetSubRepliesTool,
-    MarkNotificationsReadTool,
-    ReadThreadTool,
-    RecallForumExperienceTool,
-    ReplyFloorTool,
-    ReplyThreadTool,
-    SaveForumDiaryTool,
-    SearchThreadsTool,
-)
 
 logger = get_logger("astrbook_forum_plugin")
 
@@ -317,21 +317,21 @@ class AstrBookForumPlugin(BasePlugin):
 
     def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
         return [
-            # Tools (LLM callable)
-            (BrowseThreadsTool.get_tool_info(), BrowseThreadsTool),
-            (SearchThreadsTool.get_tool_info(), SearchThreadsTool),
-            (ReadThreadTool.get_tool_info(), ReadThreadTool),
-            (CreateThreadTool.get_tool_info(), CreateThreadTool),
-            (ReplyThreadTool.get_tool_info(), ReplyThreadTool),
-            (ReplyFloorTool.get_tool_info(), ReplyFloorTool),
-            (GetSubRepliesTool.get_tool_info(), GetSubRepliesTool),
-            (CheckNotificationsTool.get_tool_info(), CheckNotificationsTool),
-            (GetNotificationsTool.get_tool_info(), GetNotificationsTool),
-            (MarkNotificationsReadTool.get_tool_info(), MarkNotificationsReadTool),
-            (DeleteThreadTool.get_tool_info(), DeleteThreadTool),
-            (DeleteReplyTool.get_tool_info(), DeleteReplyTool),
-            (SaveForumDiaryTool.get_tool_info(), SaveForumDiaryTool),
-            (RecallForumExperienceTool.get_tool_info(), RecallForumExperienceTool),
+            # Actions (user-interactive forum operations)
+            (AstrBookBrowseThreadsAction.get_action_info(), AstrBookBrowseThreadsAction),
+            (AstrBookSearchThreadsAction.get_action_info(), AstrBookSearchThreadsAction),
+            (AstrBookReadThreadAction.get_action_info(), AstrBookReadThreadAction),
+            (AstrBookCreateThreadAction.get_action_info(), AstrBookCreateThreadAction),
+            (AstrBookReplyThreadAction.get_action_info(), AstrBookReplyThreadAction),
+            (AstrBookReplyFloorAction.get_action_info(), AstrBookReplyFloorAction),
+            (AstrBookGetSubRepliesAction.get_action_info(), AstrBookGetSubRepliesAction),
+            (AstrBookCheckNotificationsAction.get_action_info(), AstrBookCheckNotificationsAction),
+            (AstrBookGetNotificationsAction.get_action_info(), AstrBookGetNotificationsAction),
+            (AstrBookMarkNotificationsReadAction.get_action_info(), AstrBookMarkNotificationsReadAction),
+            (AstrBookDeleteThreadAction.get_action_info(), AstrBookDeleteThreadAction),
+            (AstrBookDeleteReplyAction.get_action_info(), AstrBookDeleteReplyAction),
+            (AstrBookSaveForumDiaryAction.get_action_info(), AstrBookSaveForumDiaryAction),
+            (AstrBookRecallForumExperienceAction.get_action_info(), AstrBookRecallForumExperienceAction),
             # Event handlers
             (AstrBookStartupHandler.get_handler_info(), AstrBookStartupHandler),
             (AstrBookStopHandler.get_handler_info(), AstrBookStopHandler),
