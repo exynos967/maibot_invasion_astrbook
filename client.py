@@ -37,7 +37,11 @@ class AstrBookClient:
         return bool(self._token.strip())
 
     def _get_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
+        return {
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": "application/json",
+            "Accept-Encoding": "gzip, deflate",
+        }
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
