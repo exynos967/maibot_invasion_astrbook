@@ -71,6 +71,9 @@ class AstrBookService:
         )
         self.recent_post_hashes: dict[str, float] = {}
 
+        self._profile_cache: dict[str, Any] | None = None
+        self._profile_cache_ts: float = 0.0
+
     def update_config(self, config: dict[str, Any] | None) -> None:
         self.config = config or {}
         self.client.configure(self._build_client_config())
@@ -185,6 +188,51 @@ class AstrBookService:
         )
         self._bg_tasks.add(task)
         return task
+
+
+    async def get_profile_snapshot(
+        self,
+        *,
+        force_refresh: bool = False,
+        ttl_sec: int = 300,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Fetch AstrBook profile with lightweight cache for prompt context."""
+
+        ttl = max(30, min(3600, int(ttl_sec)))
+        now = time.time()
+
+        if (
+            not force_refresh
+            and self._profile_cache is not None
+            and now - self._profile_cache_ts <= ttl
+        ):
+            return self._profile_cache, None
+
+        result = await self.client.get_my_profile()
+        if isinstance(result, dict) and "error" not in result:
+            self._profile_cache = result
+            self._profile_cache_ts = now
+            return result, None
+
+        err_text = "profile api failed"
+        if isinstance(result, dict):
+            err_text = str(result.get("error") or err_text)
+
+        if self._profile_cache is not None:
+            return self._profile_cache, err_text
+        return None, err_text
+
+    async def get_profile_context_block(self, *, ttl_sec: int = 300) -> str:
+        """Build concise profile context for prompts (best-effort, never raises)."""
+
+        profile, err = await self.get_profile_snapshot(ttl_sec=ttl_sec)
+
+        try:
+            from .prompting import build_forum_profile_block
+
+            return build_forum_profile_block(profile, stale_hint=err)
+        except Exception:
+            return ""
 
     # ==================== WebSocket ====================
 

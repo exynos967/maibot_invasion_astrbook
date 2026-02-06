@@ -173,3 +173,31 @@ class AstrBookClient:
 
     async def delete_reply(self, reply_id: int) -> dict[str, Any]:
         return await self._make_request("DELETE", f"/api/replies/{reply_id}")
+
+    async def get_my_profile(self) -> dict[str, Any]:
+        return await self._make_request("GET", "/api/auth/me")
+
+    async def like_content(self, target_type: str, target_id: int) -> dict[str, Any]:
+        target_type = str(target_type or "").strip().lower()
+        if target_type == "thread":
+            return await self._make_request("POST", f"/api/threads/{target_id}/like")
+        if target_type == "reply":
+            return await self._make_request("POST", f"/api/replies/{target_id}/like")
+        return {"error": "target_type must be thread or reply"}
+
+    async def get_block_list(self) -> dict[str, Any]:
+        return await self._make_request("GET", "/api/blocks")
+
+    async def block_user(self, user_id: int) -> dict[str, Any]:
+        return await self._make_request("POST", "/api/blocks", data={"blocked_user_id": user_id})
+
+    async def unblock_user(self, user_id: int) -> dict[str, Any]:
+        return await self._make_request("DELETE", f"/api/blocks/{user_id}")
+
+    async def check_block_status(self, user_id: int) -> dict[str, Any]:
+        return await self._make_request("GET", f"/api/blocks/check/{user_id}")
+
+    async def search_users(self, keyword: str, limit: int = 10) -> dict[str, Any]:
+        kw = str(keyword or "").strip()
+        capped_limit = max(1, min(20, int(limit or 10)))
+        return await self._make_request("GET", "/api/blocks/search/users", params={"q": kw, "limit": capped_limit})

@@ -23,12 +23,17 @@ from src.plugin_system import (
 
 from .actions import (
     AstrBookBrowseThreadsAction,
+    AstrBookCheckBlockStatusAction,
     AstrBookCheckNotificationsAction,
+    AstrBookBlockUserAction,
     AstrBookCreateThreadAction,
     AstrBookDeleteReplyAction,
     AstrBookDeleteThreadAction,
+    AstrBookGetBlockListAction,
+    AstrBookGetMyProfileAction,
     AstrBookGetNotificationsAction,
     AstrBookGetSubRepliesAction,
+    AstrBookLikeContentAction,
     AstrBookMarkNotificationsReadAction,
     AstrBookReadThreadAction,
     AstrBookRecallForumExperienceAction,
@@ -36,6 +41,8 @@ from .actions import (
     AstrBookReplyThreadAction,
     AstrBookSaveForumDiaryAction,
     AstrBookSearchThreadsAction,
+    AstrBookSearchUsersAction,
+    AstrBookUnblockUserAction,
 )
 from .commands import AstrBookBrowseCommand, AstrBookPostCommand, AstrBookStatusCommand
 from .service import AstrBookService, get_astrbook_service, set_astrbook_service
@@ -102,7 +109,7 @@ class AstrBookForumPlugin(BasePlugin):
 
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(type=str, default="1.0.6", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.0.8", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=False, description="是否启用插件"),
         },
         "astrbook": {
@@ -155,6 +162,16 @@ class AstrBookForumPlugin(BasePlugin):
                 min=64,
                 max=8192,
             ),
+            "autonomous_social_actions": ConfigField(
+                type=bool,
+                default=True,
+                description="自动回复流程是否允许自主点赞（默认开启）",
+            ),
+            "autonomous_block": ConfigField(
+                type=bool,
+                default=False,
+                description="自动回复流程是否允许自主拉黑（高风险，默认关闭）",
+            ),
         },
         "browse": {
             "enabled": ConfigField(type=bool, default=True, description="是否启用定时逛帖"),
@@ -168,6 +185,16 @@ class AstrBookForumPlugin(BasePlugin):
                 description="逛帖决策/逛帖回帖生成最大输出 tokens",
                 min=64,
                 max=8192,
+            ),
+            "autonomous_social_actions": ConfigField(
+                type=bool,
+                default=True,
+                description="定时逛帖流程是否允许自主点赞（默认开启）",
+            ),
+            "autonomous_block": ConfigField(
+                type=bool,
+                default=False,
+                description="定时逛帖流程是否允许自主拉黑（高风险，默认关闭）",
             ),
             "categories_allowlist": ConfigField(
                 type=list,
@@ -272,6 +299,8 @@ class AstrBookForumPlugin(BasePlugin):
         - v1.0.2 -> v1.0.3: posting.post_interval_sec (seconds) -> posting.post_interval_min (minutes)
         - v1.0.3 -> v1.0.4: bump max_tokens defaults to 8192 (posting) and add browse/realtime max_tokens
         - v1.0.5 -> v1.0.6: remove writing.* config and "rewrite/polish" stage (always post directly)
+        - v1.0.6 -> v1.0.7: add autonomous_social_actions switches for realtime/browse
+        - v1.0.7 -> v1.0.8: keep autonomous_social_actions default-on for likes and add autonomous_block switches
         """
 
         migrated = super()._migrate_config_values(old_config, new_config)
@@ -323,6 +352,13 @@ class AstrBookForumPlugin(BasePlugin):
             (AstrBookBrowseThreadsAction.get_action_info(), AstrBookBrowseThreadsAction),
             (AstrBookSearchThreadsAction.get_action_info(), AstrBookSearchThreadsAction),
             (AstrBookReadThreadAction.get_action_info(), AstrBookReadThreadAction),
+            (AstrBookGetMyProfileAction.get_action_info(), AstrBookGetMyProfileAction),
+            (AstrBookLikeContentAction.get_action_info(), AstrBookLikeContentAction),
+            (AstrBookGetBlockListAction.get_action_info(), AstrBookGetBlockListAction),
+            (AstrBookBlockUserAction.get_action_info(), AstrBookBlockUserAction),
+            (AstrBookUnblockUserAction.get_action_info(), AstrBookUnblockUserAction),
+            (AstrBookCheckBlockStatusAction.get_action_info(), AstrBookCheckBlockStatusAction),
+            (AstrBookSearchUsersAction.get_action_info(), AstrBookSearchUsersAction),
             (AstrBookCreateThreadAction.get_action_info(), AstrBookCreateThreadAction),
             (AstrBookReplyThreadAction.get_action_info(), AstrBookReplyThreadAction),
             (AstrBookReplyFloorAction.get_action_info(), AstrBookReplyFloorAction),

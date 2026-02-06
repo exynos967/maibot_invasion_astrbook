@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import re
 from typing import Any, Tuple
 
@@ -15,6 +16,20 @@ from .service import AstrBookService, get_astrbook_service
 from .tools import VALID_CATEGORIES
 
 logger = get_logger("astrbook_forum_actions")
+
+
+_RECENT_LIKE_ACTIONS: dict[tuple[str, str, int], float] = {}
+_LIKE_ACTION_DEDUPE_WINDOW_SEC = 8.0
+
+
+def _cleanup_recent_like_actions(now: float) -> None:
+    expired = [
+        key
+        for key, ts in _RECENT_LIKE_ACTIONS.items()
+        if now - ts > _LIKE_ACTION_DEDUPE_WINDOW_SEC
+    ]
+    for key in expired:
+        del _RECENT_LIKE_ACTIONS[key]
 
 
 def _coerce_int(value: Any) -> int | None:
@@ -77,6 +92,54 @@ def _extract_first_int(text: str) -> int | None:
         return int(m.group(1))
     except Exception:
         return None
+
+
+
+def _extract_target_id_from_text(text: str, *, target_type: str | None = None) -> int | None:
+    """Extract target id for like/reply operations with lightweight intent constraints.
+
+    Unlike `_extract_first_int`, this parser only accepts ids near semantic markers
+    (e.g. 帖子/reply/thread_id/target_id) to avoid picking unrelated numbers such as QQ IDs.
+    """
+
+    text = str(text or "").strip()
+    if not text:
+        return None
+
+    target = str(target_type or "").strip().lower()
+
+    thread_patterns = (
+        r"(?:thread_id|threadid)\s*[:=：]\s*(\d+)",
+        r"(?:帖子|贴子|主题)\s*(?:id|ID)?\s*[:=：]?\s*(\d+)",
+        r"(\d+)\s*号?\s*(?:帖子|贴子|主题)",
+    )
+    reply_patterns = (
+        r"(?:reply_id|replyid)\s*[:=：]\s*(\d+)",
+        r"(?:回复|楼层|楼中楼)\s*(?:id|ID)?\s*[:=：]?\s*(\d+)",
+        r"(\d+)\s*号?\s*(?:回复|楼层|楼中楼)",
+    )
+    common_patterns = (
+        r"(?:target_id|targetid)\s*[:=：]\s*(\d+)",
+        r"\bid\s*[:=：]\s*(\d+)",
+    )
+
+    if target == "thread":
+        patterns = (*thread_patterns, *common_patterns)
+    elif target == "reply":
+        patterns = (*reply_patterns, *common_patterns)
+    else:
+        patterns = (*thread_patterns, *reply_patterns, *common_patterns)
+
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE)
+        if not m:
+            continue
+        try:
+            return int(m.group(1))
+        except Exception:
+            continue
+
+    return None
 
 
 def _truncate(text: str, max_chars: int) -> str:
@@ -315,9 +378,17 @@ async def _get_latest_thread_candidates(
     if not items:
         return [], "无法从帖子列表解析 thread_id，请先手动浏览帖子列表。"
 
-    # Prefer non-pinned entries.
-    non_pinned = [it for it in items if not bool(it.get("pinned", False))]
-    pinned = [it for it in items if bool(it.get("pinned", False))]
+    # Prefer non-pinned entries, and always sort by id descending as newest-first fallback.
+    non_pinned = sorted(
+        [it for it in items if not bool(it.get("pinned", False))],
+        key=lambda it: int(it.get("id", 0)),
+        reverse=True,
+    )
+    pinned = sorted(
+        [it for it in items if bool(it.get("pinned", False))],
+        key=lambda it: int(it.get("id", 0)),
+        reverse=True,
+    )
     return (non_pinned + pinned), None
 
 
@@ -716,8 +787,10 @@ class AstrBookCreateThreadAction(_AstrBookAction):
                 from .prompting import build_forum_persona_block
 
                 persona_block = build_forum_persona_block()
+                profile_block = await svc.get_profile_context_block()
                 prompt = f"""
 {persona_block}
+{profile_block}
 
 用户希望你在 AstrBook 论坛发一个新帖，但他/她的请求可能没有提供完整的标题或正文。
 
@@ -947,9 +1020,11 @@ class AstrBookReplyThreadAction(_AstrBookAction):
             from .prompting import build_forum_persona_block, normalize_plain_text
 
             persona_block = build_forum_persona_block()
+            profile_block = await svc.get_profile_context_block()
             extra_req = f"额外要求：{instruction}\n" if instruction else ""
             prompt = f"""
 {persona_block}
+{profile_block}
 
 用户希望你在 AstrBook 论坛回复一个帖子（thread_id={thread_id}）。
 {extra_req}
@@ -1136,6 +1211,7 @@ class AstrBookReplyFloorAction(_AstrBookAction):
             from .prompting import build_forum_persona_block, normalize_plain_text
 
             persona_block = build_forum_persona_block()
+            profile_block = await svc.get_profile_context_block()
             extra_req = f"额外要求：{instruction}\n" if instruction else ""
             thread_ctx_block = (
                 f"\n下面是帖子正文与部分楼层（text 格式，可能被截断）：\n{_truncate(thread_text, 2500)}\n"
@@ -1144,6 +1220,7 @@ class AstrBookReplyFloorAction(_AstrBookAction):
             )
             prompt = f"""
 {persona_block}
+{profile_block}
 
 用户希望你在 AstrBook 论坛进行一次楼中楼回复（reply_id={reply_id}）。
 {extra_req}
@@ -1247,6 +1324,412 @@ class AstrBookGetSubRepliesAction(_AstrBookAction):
 
         await self.send_text(_truncate(content, 3800))
         return True, "got sub replies"
+
+
+class AstrBookGetMyProfileAction(_AstrBookAction):
+    action_name = "astrbook_get_my_profile"
+    action_description = "查看我在 AstrBook 的个人资料（昵称、等级、经验等）。"
+    activation_type = ActionActivationType.KEYWORD
+    activation_keywords = ["我的资料", "个人资料", "我的等级", "我的经验", "profile", "get_my_profile"]
+    parallel_action = False
+
+    action_parameters: dict[str, str] = {}
+    action_require = ["当用户想查看自己在论坛的资料/等级/经验时使用。"]
+    associated_types = ["text"]
+
+    async def execute(self) -> Tuple[bool, str]:
+        if not await self._ensure_token():
+            return False, "token missing"
+
+        result = await self._get_client().get_my_profile()
+        if "error" in result:
+            await self.send_text(f"获取个人资料失败：{result['error']}")
+            return False, "get_my_profile failed"
+
+        username = str(result.get("username", "未知用户") or "未知用户")
+        nickname = str(result.get("nickname", "") or "").strip() or username
+        level = result.get("level", 1)
+        exp = result.get("exp", 0)
+        avatar = str(result.get("avatar", "") or "").strip() or "未设置"
+        persona = str(result.get("persona", "") or "").strip() or "未设置"
+        created_at = str(result.get("created_at", "未知") or "未知")
+
+        if len(persona) > 80:
+            persona = persona[:77] + "..."
+
+        lines = [
+            "📋 我的论坛资料：",
+            f"- 用户名：@{username}",
+            f"- 昵称：{nickname}",
+            f"- 等级：Lv.{level}",
+            f"- 经验：{exp} EXP",
+            f"- 头像：{avatar}",
+            f"- 人设：{persona}",
+            f"- 注册时间：{created_at}",
+        ]
+        await self.send_text("\n".join(lines))
+        return True, "got my profile"
+
+
+class AstrBookLikeContentAction(_AstrBookAction):
+    action_name = "astrbook_like_content"
+    action_description = "给 AstrBook 帖子或回复点赞。"
+    activation_type = ActionActivationType.KEYWORD
+    activation_keywords = ["点赞", "点个赞", "赞一下", "like", "like_content"]
+    parallel_action = False
+
+    action_parameters = {
+        "target_type": "目标类型：thread 或 reply",
+        "target_id": "目标 ID（帖子ID或回复ID）",
+    }
+    action_require = ["当用户明确要点赞帖子或回复时使用。"]
+    associated_types = ["text"]
+
+    async def execute(self) -> Tuple[bool, str]:
+        if not await self._ensure_token():
+            return False, "token missing"
+
+        svc = self._get_service()
+
+        user_req = ""
+        if self.action_message:
+            user_req = str(getattr(self.action_message, "processed_plain_text", "") or "").strip()
+
+        wants_latest = _wants_latest_thread(user_req)
+        latest_candidates: list[dict[str, Any]] | None = None
+
+        target_type = str(self.action_data.get("target_type", "") or "").strip().lower()
+        if target_type not in {"thread", "reply"}:
+            if re.search(r"(回复|楼层|楼中楼|reply)", user_req, flags=re.IGNORECASE):
+                target_type = "reply"
+            elif re.search(r"(帖子|贴子|thread|主题)", user_req, flags=re.IGNORECASE):
+                target_type = "thread"
+
+        target_id = _coerce_int(self.action_data.get("target_id"))
+        if target_id is None:
+            if target_type == "thread":
+                target_id = _coerce_int(self.action_data.get("thread_id"))
+            elif target_type == "reply":
+                target_id = _coerce_int(self.action_data.get("reply_id"))
+
+        if target_id is None and user_req:
+            target_id = _extract_target_id_from_text(user_req, target_type=target_type)
+
+        if target_type == "thread" and target_id is None and wants_latest:
+            latest_candidates, err = await _get_latest_thread_candidates(svc.client, category=None)
+            if not latest_candidates:
+                await self.send_text(err or "无法获取最新帖子，请先浏览帖子列表。")
+                return False, "missing target_id"
+            latest_id = latest_candidates[0].get("id")
+            if not isinstance(latest_id, int):
+                await self.send_text("无法解析最新帖子 ID，请先浏览帖子列表。")
+                return False, "missing target_id"
+            target_id = latest_id
+
+        if target_type == "thread" and target_id is None and user_req:
+            title = _extract_thread_title(user_req)
+            if title:
+                resolved_id, err = await _resolve_thread_id_by_title(
+                    svc.client,
+                    title_or_keyword=title,
+                    prefer_exact_title=title,
+                )
+                if resolved_id is not None:
+                    target_id = resolved_id
+                else:
+                    await self.send_text(err or "无法通过标题定位帖子，请补充 thread_id。")
+                    return False, "missing target_id"
+
+        if target_type not in {"thread", "reply"}:
+            await self.send_text("请提供 target_type=thread/reply，例如：点赞 target_type=thread target_id=585")
+            return False, "invalid target_type"
+        if target_id is None:
+            await self.send_text("请提供 target_id，或说“给最新的帖子点赞”。")
+            return False, "missing target_id"
+
+        chat_key = str(getattr(self, "chat_id", "") or "global")
+        now = time.time()
+        _cleanup_recent_like_actions(now)
+        dedupe_key = (chat_key, target_type, target_id)
+        last_ts = _RECENT_LIKE_ACTIONS.get(dedupe_key)
+        if isinstance(last_ts, float) and now - last_ts <= _LIKE_ACTION_DEDUPE_WINDOW_SEC:
+            logger.info(
+                "[AstrBook] skip duplicate like action in short window: chat=%s type=%s id=%s",
+                chat_key,
+                target_type,
+                target_id,
+            )
+            return True, "duplicate like ignored"
+
+        result = await svc.client.like_content(target_type=target_type, target_id=target_id)
+        if "error" in result:
+            err_text = str(result.get("error") or "")
+            if (
+                target_type == "thread"
+                and wants_latest
+                and ("not found" in err_text.lower() or "404" in err_text)
+            ):
+                if latest_candidates is None:
+                    latest_candidates, _ = await _get_latest_thread_candidates(svc.client, category=None)
+                if latest_candidates:
+                    for cand in latest_candidates:
+                        cand_id = cand.get("id")
+                        if not isinstance(cand_id, int) or cand_id == target_id:
+                            continue
+                        trial = await svc.client.like_content(target_type="thread", target_id=cand_id)
+                        if "error" not in trial:
+                            result = trial
+                            target_id = cand_id
+                            err_text = ""
+                            break
+                        err_text = str(trial.get("error") or err_text)
+
+            if "error" in result:
+                await self.send_text(f"点赞失败：{err_text or result['error']}")
+                return False, "like_content failed"
+
+        _RECENT_LIKE_ACTIONS[(chat_key, target_type, target_id)] = time.time()
+
+        liked = bool(result.get("liked", False))
+        like_count = _coerce_int(result.get("like_count"))
+        like_count_text = str(like_count) if isinstance(like_count, int) else "未知"
+
+        if liked:
+            await self.send_text(
+                f"点赞成功！该{('帖子' if target_type == 'thread' else '回复')}#{target_id} 当前点赞数：{like_count_text}"
+            )
+            return True, "liked"
+
+        await self.send_text(f"你已经点过赞了。当前点赞数：{like_count_text}")
+        return True, "already liked"
+
+
+class AstrBookGetBlockListAction(_AstrBookAction):
+    action_name = "astrbook_get_block_list"
+    action_description = "查看我在 AstrBook 的黑名单列表。"
+    activation_type = ActionActivationType.KEYWORD
+    activation_keywords = ["黑名单", "查看黑名单", "block list", "get_block_list"]
+    parallel_action = False
+
+    action_parameters: dict[str, str] = {}
+    action_require = ["当用户想查看自己拉黑了哪些用户时使用。"]
+    associated_types = ["text"]
+
+    async def execute(self) -> Tuple[bool, str]:
+        if not await self._ensure_token():
+            return False, "token missing"
+
+        result = await self._get_client().get_block_list()
+        if "error" in result:
+            await self.send_text(f"获取黑名单失败：{result['error']}")
+            return False, "get_block_list failed"
+
+        items = result.get("items", [])
+        total = _coerce_int(result.get("total"))
+        if not isinstance(total, int):
+            total = len(items) if isinstance(items, list) else 0
+
+        if total <= 0:
+            await self.send_text("你的黑名单目前为空。")
+            return True, "empty block list"
+
+        lines = [f"🚫 黑名单列表（共 {total} 人）：", ""]
+        if not isinstance(items, list):
+            items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            blocked_user = item.get("blocked_user")
+            if not isinstance(blocked_user, dict):
+                blocked_user = {}
+            username = str(blocked_user.get("username", "未知用户") or "未知用户")
+            nickname = str(blocked_user.get("nickname", "") or "").strip()
+            display_name = nickname or username
+            user_id = blocked_user.get("id", "未知")
+            lines.append(f"- {display_name} (@{username})，用户ID：{user_id}")
+
+        lines.append("")
+        lines.append("可用：取消拉黑 user_id=...")
+        await self.send_text("\n".join(lines))
+        return True, "got block list"
+
+
+class AstrBookBlockUserAction(_AstrBookAction):
+    action_name = "astrbook_block_user"
+    action_description = "将指定用户加入黑名单。"
+    activation_type = ActionActivationType.KEYWORD
+    activation_keywords = ["拉黑", "加入黑名单", "block_user", "block user"]
+    parallel_action = False
+
+    action_parameters = {"user_id": "要拉黑的用户 ID（必填）"}
+    action_require = ["当用户明确要拉黑某人时使用。"]
+    associated_types = ["text"]
+
+    async def execute(self) -> Tuple[bool, str]:
+        if not await self._ensure_token():
+            return False, "token missing"
+
+        user_req = ""
+        if self.action_message:
+            user_req = str(getattr(self.action_message, "processed_plain_text", "") or "").strip()
+
+        user_id = _coerce_int(self.action_data.get("user_id"))
+        if user_id is None and self.action_message:
+            user_id = _extract_first_int(user_req)
+        if user_id is None:
+            await self.send_text("请提供 user_id，例如：拉黑 user_id=123")
+            return False, "missing user_id"
+
+        result = await self._get_client().block_user(user_id=user_id)
+        if "error" in result:
+            await self.send_text(f"拉黑失败：{result['error']}")
+            return False, "block_user failed"
+
+        blocked_user = result.get("blocked_user")
+        if not isinstance(blocked_user, dict):
+            blocked_user = {}
+        username = str(blocked_user.get("username", "未知用户") or "未知用户")
+        await self.send_text(f"已拉黑 @{username}（user_id={user_id}）。")
+        return True, "blocked user"
+
+
+class AstrBookUnblockUserAction(_AstrBookAction):
+    action_name = "astrbook_unblock_user"
+    action_description = "将指定用户移出黑名单。"
+    activation_type = ActionActivationType.KEYWORD
+    activation_keywords = ["取消拉黑", "解除拉黑", "移出黑名单", "unblock_user", "unblock user"]
+    parallel_action = False
+
+    action_parameters = {"user_id": "要取消拉黑的用户 ID（必填）"}
+    action_require = ["当用户明确要取消拉黑某人时使用。"]
+    associated_types = ["text"]
+
+    async def execute(self) -> Tuple[bool, str]:
+        if not await self._ensure_token():
+            return False, "token missing"
+
+        user_req = ""
+        if self.action_message:
+            user_req = str(getattr(self.action_message, "processed_plain_text", "") or "").strip()
+
+        user_id = _coerce_int(self.action_data.get("user_id"))
+        if user_id is None and self.action_message:
+            user_id = _extract_first_int(user_req)
+        if user_id is None:
+            await self.send_text("请提供 user_id，例如：取消拉黑 user_id=123")
+            return False, "missing user_id"
+
+        result = await self._get_client().unblock_user(user_id=user_id)
+        if "error" in result:
+            await self.send_text(f"取消拉黑失败：{result['error']}")
+            return False, "unblock_user failed"
+
+        await self.send_text(f"已取消拉黑 user_id={user_id}。")
+        return True, "unblocked user"
+
+
+class AstrBookCheckBlockStatusAction(_AstrBookAction):
+    action_name = "astrbook_check_block_status"
+    action_description = "检查某个用户是否在黑名单中。"
+    activation_type = ActionActivationType.KEYWORD
+    activation_keywords = ["是否拉黑", "黑名单状态", "check_block_status", "block status"]
+    parallel_action = False
+
+    action_parameters = {"user_id": "要检查的用户 ID（必填）"}
+    action_require = ["当用户想确认是否拉黑某人时使用。"]
+    associated_types = ["text"]
+
+    async def execute(self) -> Tuple[bool, str]:
+        if not await self._ensure_token():
+            return False, "token missing"
+
+        user_req = ""
+        if self.action_message:
+            user_req = str(getattr(self.action_message, "processed_plain_text", "") or "").strip()
+
+        user_id = _coerce_int(self.action_data.get("user_id"))
+        if user_id is None and self.action_message:
+            user_id = _extract_first_int(user_req)
+        if user_id is None:
+            await self.send_text("请提供 user_id，例如：是否拉黑 user_id=123")
+            return False, "missing user_id"
+
+        result = await self._get_client().check_block_status(user_id=user_id)
+        if "error" in result:
+            await self.send_text(f"查询黑名单状态失败：{result['error']}")
+            return False, "check_block_status failed"
+
+        is_blocked = bool(result.get("is_blocked", False))
+        if is_blocked:
+            await self.send_text(f"user_id={user_id} 当前在黑名单中。")
+            return True, "is blocked"
+
+        await self.send_text(f"user_id={user_id} 当前不在黑名单中。")
+        return True, "not blocked"
+
+
+class AstrBookSearchUsersAction(_AstrBookAction):
+    action_name = "astrbook_search_users"
+    action_description = "按关键词搜索论坛用户（用于获取 user_id 以便拉黑等操作）。"
+    activation_type = ActionActivationType.KEYWORD
+    activation_keywords = ["查用户", "搜索用户", "search_users", "搜用户"]
+    parallel_action = False
+
+    action_parameters = {
+        "keyword": "搜索关键词（用户名或昵称）",
+        "limit": "返回数量，默认 10，最大 20",
+    }
+    action_require = ["当用户想查找用户ID（用于拉黑等）时使用。"]
+    associated_types = ["text"]
+
+    async def execute(self) -> Tuple[bool, str]:
+        if not await self._ensure_token():
+            return False, "token missing"
+
+        user_req = ""
+        if self.action_message:
+            user_req = str(getattr(self.action_message, "processed_plain_text", "") or "").strip()
+
+        keyword = str(self.action_data.get("keyword", "") or "").strip()
+        if not keyword and user_req:
+            keyword = re.sub(r"^(查用户|搜索用户|搜用户)\s*", "", user_req).strip()
+        if not keyword:
+            await self.send_text("请提供 keyword，例如：查用户 keyword=小真寻")
+            return False, "missing keyword"
+
+        limit = _coerce_int(self.action_data.get("limit")) or 10
+        limit = max(1, min(20, limit))
+
+        result = await self._get_client().search_users(keyword=keyword, limit=limit)
+        if "error" in result:
+            await self.send_text(f"搜索用户失败：{result['error']}")
+            return False, "search_users failed"
+
+        items = result.get("items", [])
+        total = _coerce_int(result.get("total"))
+        if not isinstance(total, int):
+            total = len(items) if isinstance(items, list) else 0
+
+        if total <= 0:
+            await self.send_text(f"未找到与“{keyword}”匹配的用户。")
+            return True, "no users found"
+
+        lines = [f"🔍 用户搜索结果（关键词：{keyword}，共 {total} 人）：", ""]
+        if not isinstance(items, list):
+            items = []
+        for user in items:
+            if not isinstance(user, dict):
+                continue
+            nickname = str(user.get("nickname", "") or "").strip()
+            username = str(user.get("username", "未知用户") or "未知用户")
+            user_id = user.get("id", "未知")
+            display_name = nickname or username
+            lines.append(f"- {display_name} (@{username})，user_id={user_id}")
+
+        lines.append("")
+        lines.append("可用：拉黑 user_id=...")
+        await self.send_text("\n".join(lines))
+        return True, "searched users"
 
 
 class AstrBookCheckNotificationsAction(_AstrBookAction):

@@ -52,6 +52,39 @@ def build_forum_persona_block() -> str:
         "请始终以以上身份与风格在论坛发言，避免出现“作为AI/作为语言模型”等免责声明。\n"
     )
 
+def build_forum_profile_block(profile: dict | None, *, stale_hint: str | None = None) -> str:
+    """Build profile context block from `/api/auth/me` payload."""
+
+    if not isinstance(profile, dict) or not profile:
+        return ""
+
+    username = str(profile.get("username", "") or "").strip() or "unknown"
+    nickname = str(profile.get("nickname", "") or "").strip() or username
+    level = profile.get("level", "unknown")
+    exp = profile.get("exp", "unknown")
+    persona = str(profile.get("persona", "") or "").strip() or "未设置"
+
+    if len(persona) > 120:
+        persona = persona[:117] + "..."
+
+    stale_line = ""
+    if stale_hint:
+        stale_text = " ".join(str(stale_hint).split())
+        if len(stale_text) > 80:
+            stale_text = stale_text[:77] + "..."
+        stale_line = f"- 注：个人信息接口当前不可用，以下内容可能为缓存（{stale_text}）\n"
+
+    return (
+        "\n[论坛账号画像]\n"
+        f"{stale_line}"
+        f"- 论坛用户名：@{username}\n"
+        f"- 昵称：{nickname}\n"
+        f"- 等级：Lv.{level}\n"
+        f"- 经验：{exp} EXP\n"
+        f"- 论坛设定人设：{persona}\n"
+        "在生成发帖/回帖时，请尽量与以上论坛账号画像保持一致。\n"
+    )
+
 
 def _strip_code_fences(text: str) -> str:
     stripped = text.strip()

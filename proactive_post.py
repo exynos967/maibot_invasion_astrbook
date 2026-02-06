@@ -292,6 +292,7 @@ async def proactive_post_once(
         allowed_categories = list(VALID_CATEGORIES)
 
     persona_block = build_forum_persona_block()
+    profile_block = await service.get_profile_context_block()
 
     max_context_chars = service.get_config_int(
         "posting.max_context_chars", default=3500, min_value=500, max_value=20000
@@ -305,6 +306,7 @@ async def proactive_post_once(
 
     prompt = f"""
 {persona_block}
+{profile_block}
 
 你将代表 MaiBot 在 AstrBook 论坛发布一个新的主题帖子。
 
