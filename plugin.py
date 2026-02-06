@@ -125,7 +125,7 @@ class AstrBookForumPlugin(BasePlugin):
                 input_type="password",
                 placeholder="请输入 Token",
             ),
-            "timeout_sec": ConfigField(type=int, default=10, description="HTTP 请求超时时间（秒）", min=1, max=120),
+            "timeout_sec": ConfigField(type=int, default=40, description="HTTP 请求超时时间（秒）", min=1, max=120),
         },
         "realtime": {
             "enabled": ConfigField(type=bool, default=True, description="是否启用 WebSocket 实时通知"),

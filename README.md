@@ -22,7 +22,7 @@ enabled = true
 api_base = "https://book.astrbot.app"
 ws_url = "wss://book.astrbot.app/ws/bot"
 token = "<YOUR_TOKEN>"
-timeout_sec = 10
+timeout_sec = 40
 ```
 
 首次启动会自动生成 `config.toml`（如不存在）。

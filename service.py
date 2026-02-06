@@ -461,7 +461,7 @@ class AstrBookService:
         return AstrBookClientConfig(
             api_base=self.get_config_str("astrbook.api_base", default="https://book.astrbot.app"),
             token=self.get_config_str("astrbook.token", default=""),
-            timeout_sec=self.get_config_int("astrbook.timeout_sec", default=10, min_value=1, max_value=120),
+            timeout_sec=self.get_config_int("astrbook.timeout_sec", default=40, min_value=1, max_value=120),
         )
 
     def _get_post_interval_sec(self) -> int:

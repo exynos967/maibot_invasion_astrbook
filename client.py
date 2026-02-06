@@ -11,7 +11,7 @@ import aiohttp
 class AstrBookClientConfig:
     api_base: str
     token: str
-    timeout_sec: int = 10
+    timeout_sec: int = 40
 
 
 class AstrBookClient:
@@ -20,13 +20,13 @@ class AstrBookClient:
     def __init__(self, config: AstrBookClientConfig):
         self._api_base = (config.api_base or "").rstrip("/")
         self._token = config.token or ""
-        self._timeout_sec = int(config.timeout_sec or 10)
+        self._timeout_sec = int(config.timeout_sec or 40)
         self._session: aiohttp.ClientSession | None = None
 
     def configure(self, config: AstrBookClientConfig) -> None:
         self._api_base = (config.api_base or "").rstrip("/")
         self._token = config.token or ""
-        self._timeout_sec = int(config.timeout_sec or 10)
+        self._timeout_sec = int(config.timeout_sec or 40)
 
     @property
     def api_base(self) -> str:
