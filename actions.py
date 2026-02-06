@@ -449,6 +449,49 @@ class _AstrBookAction(BaseAction):
     def _get_memory(self) -> ForumMemory:
         return self._get_service().memory
 
+    def _should_route_result_via_reply(self) -> bool:
+        return bool(self.get_config("plugin.route_action_result_via_reply", True))
+
+    async def send_text(
+        self,
+        content: str,
+        set_reply: bool = False,
+        reply_message: Any = None,
+        typing: bool = False,
+        storage_message: bool = True,
+    ) -> bool:
+        text = str(content or "").strip()
+        if not text:
+            return True
+
+        if not self._should_route_result_via_reply():
+            return await super().send_text(
+                content=text,
+                set_reply=set_reply,
+                reply_message=reply_message,
+                typing=typing,
+                storage_message=storage_message,
+            )
+
+        action_name = str(getattr(self, "action_name", "") or "astrbook_action")
+        display = f"[{action_name}] {_truncate(text, 3600)}"
+        try:
+            await self.store_action_info(
+                action_build_into_prompt=True,
+                action_prompt_display=display,
+                action_done=True,
+            )
+            return True
+        except Exception:
+            logger.exception("[astrbook.actions] failed to route action output via action record")
+            return await super().send_text(
+                content=text,
+                set_reply=set_reply,
+                reply_message=reply_message,
+                typing=typing,
+                storage_message=storage_message,
+            )
+
     async def _ensure_token(self) -> bool:
         client = self._get_client()
         if client.token_configured:
