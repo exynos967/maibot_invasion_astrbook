@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import time
 from collections import deque
@@ -33,7 +34,7 @@ def get_astrbook_service() -> "AstrBookService | None":
 
 
 class AstrBookService:
-    """Background service for AstrBook integration (WS + scheduled browse)."""
+    """Background service for AstrBook integration (SSE + scheduled browse)."""
 
     def __init__(self, config: dict[str, Any]):
         self.config: dict[str, Any] = config or {}
@@ -51,8 +52,7 @@ class AstrBookService:
         self.next_post_time: float | None = None
 
         self._running: bool = False
-        self._ws: aiohttp.ClientWebSocketResponse | None = None
-        self._ws_session: aiohttp.ClientSession | None = None
+        self._sse_session: aiohttp.ClientSession | None = None
 
         self._tasks: list[asyncio.Task] = []
         self._bg_tasks: set[asyncio.Task] = set()
@@ -104,7 +104,7 @@ class AstrBookService:
         posting_enabled = self.get_config_bool("posting.enabled", default=False)
 
         if realtime_enabled:
-            self._tasks.append(self._create_task(self._ws_loop(), name="astrbook_ws_loop"))
+            self._tasks.append(self._create_task(self._sse_loop(), name="astrbook_sse_loop"))
         if browse_enabled:
             self._tasks.append(self._create_task(self._browse_loop(), name="astrbook_browse_loop"))
         if posting_enabled:
@@ -134,14 +134,11 @@ class AstrBookService:
         self._tasks.clear()
         self._bg_tasks.clear()
 
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
         self.ws_connected = False
 
-        if self._ws_session and not self._ws_session.closed:
-            await self._ws_session.close()
-        self._ws_session = None
+        if self._sse_session and not self._sse_session.closed:
+            await self._sse_session.close()
+        self._sse_session = None
 
         await self.client.close()
 
@@ -234,82 +231,128 @@ class AstrBookService:
         except Exception:
             return ""
 
-    # ==================== WebSocket ====================
+    # ==================== SSE ====================
 
-    async def _ws_loop(self) -> None:
+    async def _sse_loop(self) -> None:
         reconnect_delay = 5
         max_delay = 60
         while self._running:
             try:
-                await self._ws_connect()
+                await self._sse_connect()
                 reconnect_delay = 5
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 self.last_error = str(e)
-                logger.warning(f"[AstrBook] WS loop error: {e}")
+                logger.warning(f"[AstrBook] SSE loop error: {e}")
 
             if not self._running:
                 break
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, max_delay)
 
-    async def _ws_connect(self) -> None:
+    def _build_sse_url(self) -> str:
+        api_base = self.get_config_str("astrbook.api_base", default="https://book.astrbot.app").strip().rstrip("/")
+        if not api_base:
+            return ""
+        return f"{api_base}/sse/bot"
+
+    async def _sse_connect(self) -> None:
         token = self.get_config_str("astrbook.token", default="").strip()
         if not token:
-            self.last_error = "Token not configured, WebSocket disabled"
-            logger.warning("[AstrBook] token missing, skip websocket connection")
+            self.last_error = "Token not configured, realtime disabled"
+            logger.warning("[AstrBook] token missing, skip realtime connection")
             await asyncio.sleep(10)
             return
 
-        ws_url = self.get_config_str("astrbook.ws_url", default="wss://book.astrbot.app/ws/bot").strip()
-        if not ws_url:
-            self.last_error = "ws_url not configured"
+        sse_url = self._build_sse_url()
+        if not sse_url:
+            self.last_error = "api_base not configured"
             await asyncio.sleep(10)
             return
-
-        # token in query string (server contract)
-        sep = "&" if "?" in ws_url else "?"
-        url = f"{ws_url}{sep}token={token}"
 
         session = aiohttp.ClientSession()
-        self._ws_session = session
+        self._sse_session = session
 
-        logger.info(f"[AstrBook] Connecting WebSocket: {ws_url}")
-        async with session.ws_connect(url) as ws:
-            self._ws = ws
-            self.ws_connected = True
-            logger.info("[AstrBook] WebSocket connected")
+        logger.info("[AstrBook] Connecting SSE: %s", sse_url)
+        try:
+            async with session.get(
+                sse_url,
+                params={"token": token},
+                headers={"Accept": "text/event-stream"},
+                timeout=aiohttp.ClientTimeout(total=None, sock_read=None),
+            ) as response:
+                if response.status == 401:
+                    self.last_error = "SSE authentication failed"
+                    logger.error("[AstrBook] SSE authentication failed: invalid or expired token")
+                    return
+                if response.status != 200:
+                    self.last_error = f"SSE connection failed: {response.status}"
+                    logger.warning("[AstrBook] SSE connection failed with status %s", response.status)
+                    return
 
-            heartbeat_task = self._create_task(self._heartbeat_loop(), name="astrbook_ws_heartbeat")
-            try:
-                async for msg in ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        try:
-                            data = msg.json()
-                        except Exception:
-                            continue
-                        await self._handle_ws_message(data)
-                    elif msg.type == aiohttp.WSMsgType.ERROR:
-                        self.last_error = str(ws.exception() or "ws error")
-                        break
-                    elif msg.type == aiohttp.WSMsgType.CLOSED:
-                        break
-            finally:
-                heartbeat_task.cancel()
-                self.ws_connected = False
+                self.ws_connected = True
+                self.last_error = ""
+                logger.info("[AstrBook] SSE connected")
 
-    async def _heartbeat_loop(self) -> None:
-        while self._running and self.ws_connected and self._ws and not self._ws.closed:
-            try:
-                await self._ws.ping()
-                await asyncio.sleep(30)
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                break
+                buffer = ""
+                async for chunk in response.content:
+                    if not chunk:
+                        continue
+                    buffer += chunk.decode("utf-8", errors="replace").replace("\r\n", "\n")
+                    while "\n\n" in buffer:
+                        block, buffer = buffer.split("\n\n", 1)
+                        await self._parse_sse_block(block)
 
-    async def _handle_ws_message(self, data: dict[str, Any]) -> None:
+                if buffer.strip():
+                    await self._parse_sse_block(buffer)
+        finally:
+            self.ws_connected = False
+            if self._sse_session is session:
+                self._sse_session = None
+            if not session.closed:
+                await session.close()
+
+    async def _parse_sse_block(self, block: str) -> None:
+        event_type = ""
+        data_lines: list[str] = []
+
+        for raw_line in block.split("\n"):
+            line = raw_line.strip("\r")
+            if not line:
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                event_type = line.partition(":")[2].strip()
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line.partition(":")[2].lstrip())
+
+        if not data_lines:
+            return
+
+        payload_text = "\n".join(data_lines).strip()
+        if not payload_text:
+            return
+
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            logger.debug(
+                "[AstrBook] ignore non-json sse payload event=%s data=%s",
+                event_type or "message",
+                payload_text[:120],
+            )
+            return
+
+        if not isinstance(payload, dict):
+            logger.debug("[AstrBook] ignore non-dict sse payload type=%s", type(payload).__name__)
+            return
+
+        await self._handle_realtime_message(payload)
+
+    async def _handle_realtime_message(self, data: dict[str, Any]) -> None:
         msg_type = str(data.get("type", "") or "")
 
         if msg_type == "connected":
@@ -541,7 +584,7 @@ class AstrBookService:
         return (
             "AstrBook 论坛插件状态\n"
             "--------------------\n"
-            f"- WebSocket: {ws_status}\n"
+            f"- SSE: {ws_status}\n"
             f"- bot_user_id: {self.bot_user_id if self.bot_user_id is not None else 'N/A'}\n"
             f"- last_error: {self.last_error or 'N/A'}\n"
             f"- memory_items: {self.memory.total_items}\n"

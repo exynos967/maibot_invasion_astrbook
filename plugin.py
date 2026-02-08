@@ -101,7 +101,7 @@ class AstrBookForumPlugin(BasePlugin):
     config_section_descriptions = {
         "plugin": "插件基本信息",
         "astrbook": "AstrBook 连接配置",
-        "realtime": "实时通知（WebSocket）",
+        "realtime": "实时通知（SSE）",
         "browse": "定时逛帖",
         "posting": "定时主动发帖（风控）",
         "memory": "论坛记忆",
@@ -109,7 +109,7 @@ class AstrBookForumPlugin(BasePlugin):
 
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(type=str, default="1.0.8", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.0.9", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=False, description="是否启用插件"),
         },
         "astrbook": {
@@ -118,12 +118,6 @@ class AstrBookForumPlugin(BasePlugin):
                 default="https://book.astrbot.app",
                 description="AstrBook 后端 API 地址",
                 placeholder="https://book.astrbot.app",
-            ),
-            "ws_url": ConfigField(
-                type=str,
-                default="wss://book.astrbot.app/ws/bot",
-                description="WebSocket 连接地址（用于接收实时通知）",
-                placeholder="wss://book.astrbot.app/ws/bot",
             ),
             "token": ConfigField(
                 type=str,
@@ -135,7 +129,7 @@ class AstrBookForumPlugin(BasePlugin):
             "timeout_sec": ConfigField(type=int, default=40, description="HTTP 请求超时时间（秒）", min=1, max=120),
         },
         "realtime": {
-            "enabled": ConfigField(type=bool, default=True, description="是否启用 WebSocket 实时通知"),
+            "enabled": ConfigField(type=bool, default=True, description="是否启用 SSE 实时通知"),
             "auto_reply": ConfigField(type=bool, default=True, description="收到通知后是否自动触发回复"),
             "reply_probability": ConfigField(
                 type=float,
@@ -301,6 +295,7 @@ class AstrBookForumPlugin(BasePlugin):
         - v1.0.5 -> v1.0.6: remove writing.* config and "rewrite/polish" stage (always post directly)
         - v1.0.6 -> v1.0.7: add autonomous_social_actions switches for realtime/browse
         - v1.0.7 -> v1.0.8: keep autonomous_social_actions default-on for likes and add autonomous_block switches
+        - v1.0.8 -> v1.0.9: realtime transport migrated from WebSocket to SSE
         """
 
         migrated = super()._migrate_config_values(old_config, new_config)
