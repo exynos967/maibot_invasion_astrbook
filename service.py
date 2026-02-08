@@ -50,6 +50,13 @@ class AstrBookService:
         self.bot_user_id: int | None = None
         self.next_browse_time: float | None = None
         self.next_post_time: float | None = None
+        self._sse_connect_attempts: int = 0
+        self._sse_connect_successes: int = 0
+        self._sse_reconnect_count: int = 0
+        self._sse_last_disconnect_reason: str = ""
+        self._sse_last_disconnect_ts: float | None = None
+        self._sse_last_event_type: str = ""
+        self._sse_last_event_ts: float | None = None
 
         self._running: bool = False
         self._sse_session: aiohttp.ClientSession | None = None
@@ -237,6 +244,7 @@ class AstrBookService:
         reconnect_delay = 5
         max_delay = 60
         while self._running:
+            self._sse_connect_attempts += 1
             try:
                 await self._sse_connect()
                 reconnect_delay = 5
@@ -248,6 +256,14 @@ class AstrBookService:
 
             if not self._running:
                 break
+
+            self._sse_reconnect_count += 1
+            logger.info(
+                "[AstrBook] SSE reconnect in %ss (attempt=%s, reason=%s)",
+                reconnect_delay,
+                self._sse_connect_attempts + 1,
+                self._sse_last_disconnect_reason or "unknown",
+            )
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, max_delay)
 
@@ -257,10 +273,15 @@ class AstrBookService:
             return ""
         return f"{api_base}/sse/bot"
 
+    def _record_sse_disconnect(self, reason: str) -> None:
+        self._sse_last_disconnect_reason = (reason or "unknown").strip() or "unknown"
+        self._sse_last_disconnect_ts = time.time()
+
     async def _sse_connect(self) -> None:
         token = self.get_config_str("astrbook.token", default="").strip()
         if not token:
             self.last_error = "Token not configured, realtime disabled"
+            self._record_sse_disconnect("token_missing")
             logger.warning("[AstrBook] token missing, skip realtime connection")
             await asyncio.sleep(10)
             return
@@ -268,11 +289,13 @@ class AstrBookService:
         sse_url = self._build_sse_url()
         if not sse_url:
             self.last_error = "api_base not configured"
+            self._record_sse_disconnect("api_base_missing")
             await asyncio.sleep(10)
             return
 
         session = aiohttp.ClientSession()
         self._sse_session = session
+        disconnect_reason = "stream_closed"
 
         logger.info("[AstrBook] Connecting SSE: %s", sse_url)
         try:
@@ -284,16 +307,19 @@ class AstrBookService:
             ) as response:
                 if response.status == 401:
                     self.last_error = "SSE authentication failed"
+                    disconnect_reason = "auth_failed"
                     logger.error("[AstrBook] SSE authentication failed: invalid or expired token")
                     return
                 if response.status != 200:
                     self.last_error = f"SSE connection failed: {response.status}"
+                    disconnect_reason = f"http_{response.status}"
                     logger.warning("[AstrBook] SSE connection failed with status %s", response.status)
                     return
 
                 self.ws_connected = True
                 self.last_error = ""
-                logger.info("[AstrBook] SSE connected")
+                self._sse_connect_successes += 1
+                logger.info("[AstrBook] SSE connected (success_count=%s)", self._sse_connect_successes)
 
                 buffer = ""
                 async for chunk in response.content:
@@ -306,8 +332,18 @@ class AstrBookService:
 
                 if buffer.strip():
                     await self._parse_sse_block(buffer)
+        except asyncio.CancelledError:
+            disconnect_reason = "cancelled"
+            raise
+        except Exception as e:
+            disconnect_reason = f"error_{type(e).__name__}"
+            raise
         finally:
+            if not self._running and disconnect_reason == "stream_closed":
+                disconnect_reason = "service_stopped"
+
             self.ws_connected = False
+            self._record_sse_disconnect(disconnect_reason)
             if self._sse_session is session:
                 self._sse_session = None
             if not session.closed:
@@ -349,6 +385,9 @@ class AstrBookService:
         if not isinstance(payload, dict):
             logger.debug("[AstrBook] ignore non-dict sse payload type=%s", type(payload).__name__)
             return
+
+        self._sse_last_event_type = event_type or str(payload.get("type", "") or "message")
+        self._sse_last_event_ts = time.time()
 
         await self._handle_realtime_message(payload)
 
@@ -569,22 +608,26 @@ class AstrBookService:
 
         return self.get_config_int("posting.post_interval_sec", default=21600, min_value=300, max_value=86400 * 7)
 
+    def _format_time_or_na(self, ts: float | None) -> str:
+        if ts is None:
+            return "N/A"
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
     def get_status_text(self) -> str:
-        ws_status = "已连接" if self.ws_connected else "未连接"
+        realtime_status = "已连接" if self.ws_connected else "未连接"
         posting_cfg = "on" if self.get_config_bool("posting.enabled", default=False) else "off"
         posting_task = "running" if self._is_task_running("astrbook_post_loop") else "off"
-        next_browse = (
-            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.next_browse_time))
-            if self.next_browse_time
-            else "N/A"
-        )
-        next_post = (
-            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.next_post_time)) if self.next_post_time else "N/A"
-        )
+        next_browse = self._format_time_or_na(self.next_browse_time)
+        next_post = self._format_time_or_na(self.next_post_time)
+        last_sse_event = self._sse_last_event_type or "N/A"
+        last_sse_event_time = self._format_time_or_na(self._sse_last_event_ts)
+        last_sse_disconnect_reason = self._sse_last_disconnect_reason or "N/A"
+        last_sse_disconnect_time = self._format_time_or_na(self._sse_last_disconnect_ts)
+
         return (
             "AstrBook 论坛插件状态\n"
             "--------------------\n"
-            f"- SSE: {ws_status}\n"
+            f"- SSE: {realtime_status}\n"
             f"- bot_user_id: {self.bot_user_id if self.bot_user_id is not None else 'N/A'}\n"
             f"- last_error: {self.last_error or 'N/A'}\n"
             f"- memory_items: {self.memory.total_items}\n"
@@ -592,6 +635,13 @@ class AstrBookService:
             f"- post_loop_task: {posting_task}\n"
             f"- next_browse_time: {next_browse}\n"
             f"- next_post_time: {next_post}\n"
+            f"- sse_connect_attempts: {self._sse_connect_attempts}\n"
+            f"- sse_connect_successes: {self._sse_connect_successes}\n"
+            f"- sse_reconnects: {self._sse_reconnect_count}\n"
+            f"- sse_last_event: {last_sse_event}\n"
+            f"- sse_last_event_time: {last_sse_event_time}\n"
+            f"- sse_last_disconnect_reason: {last_sse_disconnect_reason}\n"
+            f"- sse_last_disconnect_time: {last_sse_disconnect_time}\n"
         )
 
     def _is_task_running(self, name: str) -> bool:
