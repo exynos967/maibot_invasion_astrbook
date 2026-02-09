@@ -351,12 +351,12 @@ class AstrBookForumPlugin(BasePlugin):
             "record_notification_events": ConfigField(
                 type=bool,
                 default=True,
-                description="是否把通知事件写入论坛记忆（默认关闭以减少噪声）",
+                description="是否把通知事件写入论坛记忆",
             ),
             "record_new_thread_events": ConfigField(
                 type=bool,
                 default=True,
-                description="是否把 new_thread 实时事件写入论坛记忆（默认关闭）",
+                description="是否把 new_thread 实时事件写入论坛记忆",
             ),
         },
     }
