@@ -110,7 +110,7 @@ class AstrBookForumPlugin(BasePlugin):
 
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(type=str, default="1.0.10", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.0.11", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=False, description="是否启用插件"),
         },
         "astrbook": {
@@ -166,6 +166,28 @@ class AstrBookForumPlugin(BasePlugin):
                 type=bool,
                 default=False,
                 description="自动回复流程是否允许自主拉黑（高风险，默认关闭）",
+            ),
+            "auto_mark_read": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用自动将通知标记为已读",
+            ),
+            "auto_mark_read_on_auto_reply": ConfigField(
+                type=bool,
+                default=True,
+                description="触发自动回复后，是否自动标记通知为已读",
+            ),
+            "auto_mark_read_on_fetch": ConfigField(
+                type=bool,
+                default=True,
+                description="调用 get_notifications 后是否自动标记通知为已读",
+            ),
+            "auto_mark_read_cooldown_sec": ConfigField(
+                type=int,
+                default=2,
+                description="自动标记已读的最小间隔（秒）",
+                min=0,
+                max=300,
             ),
         },
         "browse": {
@@ -327,6 +349,16 @@ class AstrBookForumPlugin(BasePlugin):
                 description="论坛记忆存储路径（相对 MaiBot 工作目录）",
                 placeholder="data/astrbook/forum_memory.json",
             ),
+            "record_notification_events": ConfigField(
+                type=bool,
+                default=True,
+                description="是否把通知事件写入论坛记忆（默认关闭以减少噪声）",
+            ),
+            "record_new_thread_events": ConfigField(
+                type=bool,
+                default=True,
+                description="是否把 new_thread 实时事件写入论坛记忆（默认关闭）",
+            ),
         },
     }
 
@@ -340,6 +372,7 @@ class AstrBookForumPlugin(BasePlugin):
         - v1.0.7 -> v1.0.8: keep autonomous_social_actions default-on for likes and add autonomous_block switches
         - v1.0.8 -> v1.0.9: realtime transport migrated from WebSocket to SSE
         - v1.0.9 -> v1.0.10: add llm.* model slot routing config
+        - v1.0.10 -> v1.0.11: add auto-mark-read and notification memory controls
         """
 
         migrated = super()._migrate_config_values(old_config, new_config)

@@ -80,6 +80,7 @@ class AstrBookService:
 
         self._profile_cache: dict[str, Any] | None = None
         self._profile_cache_ts: float = 0.0
+        self._last_mark_notifications_read_ts: float = 0.0
 
     def update_config(self, config: dict[str, Any] | None) -> None:
         self.config = config or {}
@@ -413,7 +414,125 @@ class AstrBookService:
         if msg_type == "new_thread":
             self._handle_new_thread(data)
 
+    def _should_record_notification_events(self) -> bool:
+        return self.get_config_bool("memory.record_notification_events", default=False)
+
+    def _record_notification_event(
+        self,
+        *,
+        notif_type: str,
+        thread_id: int,
+        thread_title: str,
+        from_username: str,
+        preview: str,
+        reply_id: int | None = None,
+        notification_id: int | None = None,
+        is_read: bool | None = None,
+    ) -> None:
+        if notif_type not in {"mention", "reply", "sub_reply"}:
+            return
+
+        metadata: dict[str, Any] = {
+            "thread_id": thread_id,
+            "thread_title": thread_title,
+            "reply_id": reply_id,
+            "from_user": from_username,
+            "notification_type": notif_type,
+        }
+        if isinstance(notification_id, int):
+            metadata["notification_id"] = notification_id
+        if is_read is not None:
+            metadata["is_read"] = bool(is_read)
+
+        if notif_type == "mention":
+            self.memory.add_memory(
+                "mentioned",
+                f"我在《{thread_title}》中被 @{from_username} 提及: {preview[:50]}...",
+                metadata=metadata,
+            )
+            return
+
+        self.memory.add_memory(
+            "replied",
+            f"@{from_username} 在《{thread_title}》回复了我: {preview[:50]}...",
+            metadata=metadata,
+        )
+
+    def record_notifications_snapshot(self, items: Any) -> int:
+        if not self._should_record_notification_events():
+            return 0
+        if not isinstance(items, list):
+            return 0
+
+        existing_notification_ids = {
+            m.metadata.get("notification_id")
+            for m in self.memory.get_memories(limit=self.memory.max_items)
+            if isinstance(m.metadata.get("notification_id"), int)
+        }
+
+        added = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            notif_id = item.get("id") or item.get("notification_id")
+            if isinstance(notif_id, int) and notif_id in existing_notification_ids:
+                continue
+            if isinstance(notif_id, int):
+                existing_notification_ids.add(notif_id)
+
+            notif_type = str(item.get("type", "") or "")
+            if notif_type not in {"mention", "reply", "sub_reply"}:
+                continue
+
+            thread_id = item.get("thread_id")
+            if not isinstance(thread_id, int):
+                continue
+
+            from_user = item.get("from_user", {}) if isinstance(item.get("from_user"), dict) else {}
+            username = str(from_user.get("username", "unknown") or "unknown")
+            thread_title = str(item.get("thread_title", "") or "")
+            reply_id = item.get("reply_id") if isinstance(item.get("reply_id"), int) else None
+            preview = str(item.get("content_preview") or item.get("content") or "")
+
+            self._record_notification_event(
+                notif_type=notif_type,
+                thread_id=thread_id,
+                thread_title=thread_title,
+                from_username=username,
+                preview=preview,
+                reply_id=reply_id,
+                notification_id=notif_id if isinstance(notif_id, int) else None,
+                is_read=bool(item.get("is_read")),
+            )
+            added += 1
+
+        return added
+
+    async def maybe_mark_notifications_read(self, *, reason: str, force: bool = False) -> bool:
+        if not self.get_config_bool("realtime.auto_mark_read", default=True):
+            return False
+
+        now = time.time()
+        cooldown_sec = self.get_config_int(
+            "realtime.auto_mark_read_cooldown_sec", default=2, min_value=0, max_value=300
+        )
+        if not force and cooldown_sec > 0 and (now - self._last_mark_notifications_read_ts) < cooldown_sec:
+            return False
+
+        result = await self.client.mark_notifications_read()
+        if "error" in result:
+            logger.warning("[AstrBook] auto mark notifications read failed (%s): %s", reason, result["error"])
+            return False
+
+        self._last_mark_notifications_read_ts = now
+        logger.debug("[AstrBook] notifications marked read (%s)", reason)
+        return True
+
     def _handle_new_thread(self, data: dict[str, Any]) -> None:
+        if not self.get_config_bool("memory.record_new_thread_events", default=False):
+            return
+
         thread_id = data.get("thread_id")
         thread_title = str(data.get("thread_title", "") or "")
         author = str(data.get("author", "unknown") or "unknown")
@@ -439,17 +558,14 @@ class AstrBookService:
         if not isinstance(thread_id, int):
             return
 
-        if msg_type == "mention":
-            self.memory.add_memory(
-                "mentioned",
-                f"被 @{from_username} 在《{thread_title}》中提及: {content[:50]}...",
-                metadata={"thread_id": thread_id, "thread_title": thread_title, "from_user": from_username},
-            )
-        else:
-            self.memory.add_memory(
-                "replied",
-                f"{from_username} 回复了你在《{thread_title}》中的发言: {content[:50]}...",
-                metadata={"thread_id": thread_id, "thread_title": thread_title, "from_user": from_username},
+        if self._should_record_notification_events():
+            self._record_notification_event(
+                notif_type=msg_type,
+                thread_id=thread_id,
+                thread_title=thread_title,
+                from_username=from_username,
+                preview=content,
+                reply_id=reply_id if isinstance(reply_id, int) else None,
             )
 
         # Auto reply decision.
@@ -511,6 +627,13 @@ class AstrBookService:
             name="astrbook_auto_reply",
         )
         self._bg_tasks.add(task)
+
+        if self.get_config_bool("realtime.auto_mark_read_on_auto_reply", default=True):
+            mark_task = self._create_task(
+                self.maybe_mark_notifications_read(reason="auto-reply"),
+                name="astrbook_auto_mark_read",
+            )
+            self._bg_tasks.add(mark_task)
 
     def _cleanup_recent_reply_ids(self, now: float, window_sec: int) -> None:
         if window_sec <= 0:
@@ -623,6 +746,7 @@ class AstrBookService:
         last_sse_event_time = self._format_time_or_na(self._sse_last_event_ts)
         last_sse_disconnect_reason = self._sse_last_disconnect_reason or "N/A"
         last_sse_disconnect_time = self._format_time_or_na(self._sse_last_disconnect_ts)
+        last_mark_read_time = self._format_time_or_na(self._last_mark_notifications_read_ts or None)
 
         return (
             "AstrBook 论坛插件状态\n"
@@ -642,6 +766,7 @@ class AstrBookService:
             f"- sse_last_event_time: {last_sse_event_time}\n"
             f"- sse_last_disconnect_reason: {last_sse_disconnect_reason}\n"
             f"- sse_last_disconnect_time: {last_sse_disconnect_time}\n"
+            f"- last_mark_read_time: {last_mark_read_time}\n"
         )
 
     def _is_task_running(self, name: str) -> bool:

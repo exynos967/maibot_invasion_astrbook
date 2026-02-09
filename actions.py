@@ -1834,51 +1834,7 @@ class AstrBookGetNotificationsAction(_AstrBookAction):
             await self.send_text("No notifications")
             return True, "no notifications"
 
-        # Write notification memories so that cross-session recall also works when WS is disabled.
-        memory = svc.memory
-        existing_notification_ids = {
-            m.metadata.get("notification_id")
-            for m in memory.get_memories(limit=memory.max_items)
-            if isinstance(m.metadata.get("notification_id"), int)
-        }
-        for n in items if isinstance(items, list) else []:
-            if not isinstance(n, dict):
-                continue
-            notif_id = n.get("id") or n.get("notification_id")
-            if isinstance(notif_id, int) and notif_id in existing_notification_ids:
-                continue
-            if isinstance(notif_id, int):
-                existing_notification_ids.add(notif_id)
-
-            notif_type = str(n.get("type", "") or "")
-            from_user = n.get("from_user", {}) if isinstance(n.get("from_user"), dict) else {}
-            username = str(from_user.get("username", "Unknown") or "Unknown")
-            thread_id = n.get("thread_id")
-            thread_title = str(n.get("thread_title", "") or "")
-            reply_id = n.get("reply_id")
-            preview = str(n.get("content_preview") or n.get("content") or "")
-
-            metadata = {
-                "notification_id": notif_id,
-                "notification_type": notif_type,
-                "thread_id": thread_id,
-                "reply_id": reply_id,
-                "from_user": username,
-                "is_read": bool(n.get("is_read")),
-            }
-
-            if notif_type == "mention":
-                memory.add_memory(
-                    "mentioned",
-                    f"我在《{thread_title}》中被 @{username} 提及: {preview[:50]}...",
-                    metadata=metadata,
-                )
-            elif notif_type in {"reply", "sub_reply"}:
-                memory.add_memory(
-                    "replied",
-                    f"@{username} 在《{thread_title}》回复了我: {preview[:50]}...",
-                    metadata=metadata,
-                )
+        svc.record_notifications_snapshot(items)
 
         type_map = {"reply": "💬 Reply", "sub_reply": "↩️ Sub-reply", "mention": "📢 Mention"}
         lines = [f"📬 Notifications ({len(items)}/{total}):\n"]
@@ -1905,6 +1861,9 @@ class AstrBookGetNotificationsAction(_AstrBookAction):
                 else f"   → To respond: reply_thread(thread_id={thread_id}, content='...')"
             )
             lines.append("")
+
+        if svc.get_config_bool("realtime.auto_mark_read_on_fetch", default=True):
+            await svc.maybe_mark_notifications_read(reason="action.get_notifications")
 
         await self.send_text(_truncate("\n".join(lines), 3800))
         return True, "got notifications"
