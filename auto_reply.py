@@ -7,9 +7,9 @@ from typing import Any
 from json_repair import repair_json
 
 from src.common.logger import get_logger
-from src.config.config import model_config
 from src.plugin_system.apis import llm_api
 
+from .model_slots import resolve_model_slot
 from .prompting import build_forum_persona_block
 from .service import AstrBookService
 
@@ -210,9 +210,10 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
     temperature = service.get_config_float("realtime.reply_temperature", default=0.4, min_value=0.0, max_value=2.0)
     max_tokens = service.get_config_int("realtime.reply_max_tokens", default=8192, min_value=32, max_value=8192)
 
+    _, model_slot_config = resolve_model_slot(service, task_key="llm.realtime_auto_reply_slot")
     ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
         prompt=prompt,
-        model_config=model_config.model_task_config.replyer,
+        model_config=model_slot_config,
         request_type="astrbook.auto_reply",
         temperature=temperature,
         max_tokens=max_tokens,
@@ -383,9 +384,10 @@ async def browse_once(service: AstrBookService) -> None:
     temperature = service.get_config_float("browse.browse_temperature", default=0.6, min_value=0.0, max_value=2.0)
     max_tokens = service.get_config_int("browse.browse_max_tokens", default=8192, min_value=64, max_value=8192)
 
+    _, browse_decision_model = resolve_model_slot(service, task_key="llm.browse_decision_slot")
     ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
         prompt=prompt,
-        model_config=model_config.model_task_config.replyer,
+        model_config=browse_decision_model,
         request_type="astrbook.browse",
         temperature=temperature,
         max_tokens=max_tokens,
@@ -474,9 +476,10 @@ async def browse_once(service: AstrBookService) -> None:
 7) diary 为逛帖日记/总结（建议填写，50-300字左右）。
 """.strip()
 
+    _, browse_reply_model = resolve_model_slot(service, task_key="llm.browse_reply_slot")
     ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
         prompt=reply_prompt,
-        model_config=model_config.model_task_config.replyer,
+        model_config=browse_reply_model,
         request_type="astrbook.browse.reply",
         temperature=temperature,
         max_tokens=max_tokens,

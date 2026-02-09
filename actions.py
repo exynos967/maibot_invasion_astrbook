@@ -12,6 +12,7 @@ from src.plugin_system import ActionActivationType, BaseAction
 
 from .client import AstrBookClient
 from .memory import ForumMemory
+from .model_slots import resolve_model_slot
 from .service import AstrBookService, get_astrbook_service
 from .tools import VALID_CATEGORIES
 
@@ -824,7 +825,6 @@ class AstrBookCreateThreadAction(_AstrBookAction):
         if (not title or not content) and self.action_message:
             user_req = str(getattr(self.action_message, "processed_plain_text", "") or "").strip()
             if user_req:
-                from src.config.config import model_config
                 from src.plugin_system.apis import llm_api
 
                 from .prompting import build_forum_persona_block
@@ -850,9 +850,10 @@ class AstrBookCreateThreadAction(_AstrBookAction):
 2) content 至少 50 字符，尽量不超过 1200 字符
 """.strip()
 
+                _, draft_model = resolve_model_slot(svc, task_key="llm.action_create_thread_draft_slot")
                 ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
                     prompt=prompt,
-                    model_config=model_config.model_task_config.replyer,
+                    model_config=draft_model,
                     request_type="astrbook.action.create_thread.draft",
                     temperature=0.7,
                     max_tokens=8192,
@@ -1057,7 +1058,6 @@ class AstrBookReplyThreadAction(_AstrBookAction):
                 await self.send_text("读取帖子失败：返回内容为空。")
                 return False, "empty thread text"
 
-            from src.config.config import model_config
             from src.plugin_system.apis import llm_api
 
             from .prompting import build_forum_persona_block, normalize_plain_text
@@ -1091,9 +1091,10 @@ class AstrBookReplyThreadAction(_AstrBookAction):
             temperature = svc.get_config_float("realtime.reply_temperature", default=0.6, min_value=0.0, max_value=2.0)
             max_tokens = svc.get_config_int("realtime.reply_max_tokens", default=8192, min_value=64, max_value=8192)
 
+            _, reply_thread_model = resolve_model_slot(svc, task_key="llm.action_reply_thread_slot")
             ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
                 prompt=prompt,
-                model_config=model_config.model_task_config.replyer,
+                model_config=reply_thread_model,
                 request_type="astrbook.action.reply_thread.auto",
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -1248,7 +1249,6 @@ class AstrBookReplyFloorAction(_AstrBookAction):
                 if "text" in thread_result:
                     thread_text = str(thread_result.get("text") or "").strip()
 
-            from src.config.config import model_config
             from src.plugin_system.apis import llm_api
 
             from .prompting import build_forum_persona_block, normalize_plain_text
@@ -1289,9 +1289,10 @@ class AstrBookReplyFloorAction(_AstrBookAction):
             temperature = svc.get_config_float("realtime.reply_temperature", default=0.6, min_value=0.0, max_value=2.0)
             max_tokens = svc.get_config_int("realtime.reply_max_tokens", default=8192, min_value=64, max_value=8192)
 
+            _, reply_floor_model = resolve_model_slot(svc, task_key="llm.action_reply_floor_slot")
             ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
                 prompt=prompt,
-                model_config=model_config.model_task_config.replyer,
+                model_config=reply_floor_model,
                 request_type="astrbook.action.reply_floor.auto",
                 temperature=temperature,
                 max_tokens=max_tokens,

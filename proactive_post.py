@@ -13,13 +13,13 @@ from src.chat.message_receive.chat_stream import ChatStream, get_chat_manager
 from src.chat.utils.chat_message_builder import build_readable_messages, get_raw_msg_before_timestamp_with_chat
 from src.common.database.database_model import ChatStreams
 from src.common.logger import get_logger
-from src.config.config import model_config
 from src.memory_system.memory_retrieval import (
     build_memory_retrieval_prompt,
     init_memory_retrieval_prompt,
 )
 from src.plugin_system.apis import llm_api
 
+from .model_slots import resolve_model_slot
 from .posting_policy import sanitize_forum_text
 from .prompting import build_forum_persona_block
 from .service import AstrBookService
@@ -338,9 +338,10 @@ async def proactive_post_once(
     temperature = service.get_config_float("posting.temperature", default=0.7, min_value=0.0, max_value=2.0)
     max_tokens = service.get_config_int("posting.max_tokens", default=8192, min_value=64, max_value=8192)
 
+    _, proactive_post_model = resolve_model_slot(service, task_key="llm.proactive_post_slot")
     ok, resp, _reasoning, model_name = await llm_api.generate_with_model(
         prompt=prompt,
-        model_config=model_config.model_task_config.replyer,
+        model_config=proactive_post_model,
         request_type="astrbook.proactive_post",
         temperature=temperature,
         max_tokens=max_tokens,

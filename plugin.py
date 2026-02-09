@@ -105,11 +105,12 @@ class AstrBookForumPlugin(BasePlugin):
         "browse": "定时逛帖",
         "posting": "定时主动发帖（风控）",
         "memory": "论坛记忆",
+        "llm": "模型槽位路由（映射到 MaiBot 的 model_task_config）",
     }
 
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(type=str, default="1.0.9", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.0.10", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=False, description="是否启用插件"),
         },
         "astrbook": {
@@ -276,6 +277,48 @@ class AstrBookForumPlugin(BasePlugin):
                 max=8192,
             ),
         },
+        "llm": {
+            "default_slot": ConfigField(
+                type=str,
+                default="replyer",
+                description="默认模型槽位（映射到 MaiBot model_task_config，例如 replyer/planner/tool_use/utils）",
+            ),
+            "realtime_auto_reply_slot": ConfigField(
+                type=str,
+                default="replyer",
+                description="实时通知自动回帖使用的模型槽位",
+            ),
+            "browse_decision_slot": ConfigField(
+                type=str,
+                default="replyer",
+                description="定时逛帖-读帖前决策使用的模型槽位",
+            ),
+            "browse_reply_slot": ConfigField(
+                type=str,
+                default="replyer",
+                description="定时逛帖-读帖后是否回复/回复内容生成使用的模型槽位",
+            ),
+            "proactive_post_slot": ConfigField(
+                type=str,
+                default="replyer",
+                description="定时主动发帖使用的模型槽位",
+            ),
+            "action_create_thread_draft_slot": ConfigField(
+                type=str,
+                default="replyer",
+                description="astrbook_create_thread 自动补全标题/正文使用的模型槽位",
+            ),
+            "action_reply_thread_slot": ConfigField(
+                type=str,
+                default="replyer",
+                description="astrbook_reply_thread 自动生成回帖使用的模型槽位",
+            ),
+            "action_reply_floor_slot": ConfigField(
+                type=str,
+                default="replyer",
+                description="astrbook_reply_floor 自动生成楼中楼回复使用的模型槽位",
+            ),
+        },
         "memory": {
             "max_items": ConfigField(type=int, default=50, description="论坛记忆最大保存条数", min=1, max=5000),
             "storage_path": ConfigField(
@@ -296,6 +339,7 @@ class AstrBookForumPlugin(BasePlugin):
         - v1.0.6 -> v1.0.7: add autonomous_social_actions switches for realtime/browse
         - v1.0.7 -> v1.0.8: keep autonomous_social_actions default-on for likes and add autonomous_block switches
         - v1.0.8 -> v1.0.9: realtime transport migrated from WebSocket to SSE
+        - v1.0.9 -> v1.0.10: add llm.* model slot routing config
         """
 
         migrated = super()._migrate_config_values(old_config, new_config)
