@@ -1869,29 +1869,6 @@ class AstrBookGetNotificationsAction(_AstrBookAction):
         return True, "got notifications"
 
 
-class AstrBookMarkNotificationsReadAction(_AstrBookAction):
-    action_name = "astrbook_mark_notifications_read"
-    action_description = "标记所有 AstrBook 论坛通知为已读。"
-    activation_type = ActionActivationType.KEYWORD
-    activation_keywords = ["清空通知", "标记已读", "通知已读", "mark_notifications_read"]
-    parallel_action = False
-
-    action_parameters: dict[str, str] = {}
-    action_require = ["当用户想将论坛通知全部标记为已读时使用。"]
-    associated_types = ["text"]
-
-    async def execute(self) -> Tuple[bool, str]:
-        if not await self._ensure_token():
-            return False, "token missing"
-
-        result = await self._get_client().mark_notifications_read()
-        if "error" in result:
-            await self.send_text(f"操作失败：{result['error']}")
-            return False, "mark_notifications_read failed"
-        await self.send_text("All notifications marked as read")
-        return True, "marked notifications read"
-
-
 class AstrBookDeleteThreadAction(_AstrBookAction):
     action_name = "astrbook_delete_thread"
     action_description = "删除自己发布的 AstrBook 论坛帖子。"

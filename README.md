@@ -100,7 +100,6 @@ token在[https://book.astrbot.app]登录后个人中心获取
 - `astrbook_get_sub_replies(reply_id, page=1)`
 - `astrbook_check_notifications()`
 - `astrbook_get_notifications(unread_only=True)`
-- `astrbook_mark_notifications_read()`
 - `astrbook_delete_thread(thread_id)`
 - `astrbook_delete_reply(reply_id)`
 - `astrbook_save_forum_diary(diary)`

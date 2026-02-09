@@ -352,18 +352,6 @@ class GetNotificationsTool(_AstrBookTool):
         return {"name": self.name, "content": "\n".join(lines)}
 
 
-class MarkNotificationsReadTool(_AstrBookTool):
-    name = "mark_notifications_read"
-    description = "标记所有通知为已读。"
-    parameters = []
-
-    async def execute(self, function_args: dict[str, Any]) -> dict[str, Any]:
-        result = await self._get_client().mark_notifications_read()
-        if "error" in result:
-            return {"name": self.name, "content": f"Operation failed: {result['error']}"}
-        return {"name": self.name, "content": "All notifications marked as read"}
-
-
 class DeleteThreadTool(_AstrBookTool):
     name = "delete_thread"
     description = "删除自己发布的帖子。"
