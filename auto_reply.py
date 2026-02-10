@@ -89,6 +89,8 @@ async def _apply_autonomous_social_actions(
     like_enabled: bool,
     like_target_type: str,
     like_target_id: int | None,
+    follow_enabled: bool,
+    follow_user_id: int | None,
     block_enabled: bool,
     block_user_id: int | None,
 ) -> None:
@@ -118,6 +120,38 @@ async def _apply_autonomous_social_actions(
                     "auto_action",
                     f"{scene}时检测到{like_target_type}#{like_target_id}此前已点赞（当前点赞数：{like_count_text}）。",
                     metadata={"target_type": like_target_type, "target_id": like_target_id, "scene": scene},
+                )
+
+    if follow_enabled and isinstance(follow_user_id, int):
+        if not (service.bot_user_id and follow_user_id == service.bot_user_id):
+            follow_result = await service.client.toggle_follow(user_id=follow_user_id, action="follow")
+            if "error" in follow_result:
+                error_text = str(follow_result.get("error") or "")
+                error_lower = error_text.lower()
+                already_followed = (
+                    ("already" in error_lower and "follow" in error_lower)
+                    or "已关注" in error_text
+                    or "重复关注" in error_text
+                )
+                if already_followed:
+                    service.memory.add_memory(
+                        "auto_action",
+                        f"{scene}时检测到 user_id={follow_user_id} 已在关注列表中。",
+                        metadata={"followed_user_id": follow_user_id, "scene": scene},
+                    )
+                else:
+                    service.memory.add_memory(
+                        "auto_action",
+                        f"{scene}时尝试关注 user_id={follow_user_id} 失败：{error_text or 'unknown error'}",
+                        metadata={"followed_user_id": follow_user_id, "scene": scene},
+                    )
+            else:
+                msg = str(follow_result.get("message", "") or "").strip()
+                suffix = f"（{msg}）" if msg else ""
+                service.memory.add_memory(
+                    "auto_action",
+                    f"{scene}时已自主关注 user_id={follow_user_id}{suffix}",
+                    metadata={"followed_user_id": follow_user_id, "scene": scene},
                 )
 
     if not block_enabled:
@@ -167,6 +201,7 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
         return
 
     social_actions_enabled = service.get_config_bool("realtime.autonomous_social_actions", default=True)
+    follow_actions_enabled = social_actions_enabled and service.get_config_bool("realtime.autonomous_follow", default=False)
     block_actions_enabled = social_actions_enabled and service.get_config_bool("realtime.autonomous_block", default=False)
     like_target_type = "reply" if isinstance(reply_id, int) else "thread"
     like_target_id = reply_id if isinstance(reply_id, int) else thread_id
@@ -196,15 +231,16 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
 下面是帖子正文与部分楼层（可能被截断）：
 {thread_text}
 
-请你判断是否需要回复，并决定是否要执行额外动作（点赞/拉黑）。
+请你判断是否需要回复，并决定是否要执行额外动作（点赞/关注/拉黑）。
 
 要求：
 1) 只输出严格 JSON，不要输出任何多余文字。
-2) JSON 格式：{{"should_reply": true/false, "content": "...", "should_like": true/false, "block_user": true/false}}
+2) JSON 格式：{{"should_reply": true/false, "content": "...", "should_like": true/false, "should_follow": true/false, "block_user": true/false}}
 3) content 为空字符串表示不回复。
 4) 回复需有实质内容，避免纯水；语气自然、友好。
 5) should_like=true 表示对当前通知相关目标点个赞（优先点赞被回复的楼层，其次帖子）。
-6) block_user=true 仅在对方明显恶意骚扰/辱骂/广告刷屏时才使用，正常讨论必须为 false。
+6) should_follow=true 表示关注通知发起者（仅在对方长期输出高质量内容时使用，默认 false）。
+7) block_user=true 仅在对方明显恶意骚扰/辱骂/广告刷屏时才使用，正常讨论必须为 false。
 """.strip()
 
     temperature = service.get_config_float("realtime.reply_temperature", default=0.4, min_value=0.0, max_value=2.0)
@@ -230,6 +266,7 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
     should_reply = bool(data.get("should_reply", False))
     reply_content = str(data.get("content", "") or "").strip()
     should_like = bool(data.get("should_like", False))
+    should_follow = bool(data.get("should_follow", False))
     should_block = bool(data.get("block_user", False))
 
     if not should_reply or not reply_content:
@@ -250,6 +287,8 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
             like_enabled=should_like,
             like_target_type=like_target_type,
             like_target_id=like_target_id if isinstance(like_target_id, int) else None,
+            follow_enabled=should_follow and follow_actions_enabled,
+            follow_user_id=from_user_id if isinstance(from_user_id, int) else None,
             block_enabled=should_block and block_actions_enabled,
             block_user_id=from_user_id if isinstance(from_user_id, int) else None,
         )
@@ -271,6 +310,8 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
                 like_enabled=should_like,
                 like_target_type=like_target_type,
                 like_target_id=like_target_id if isinstance(like_target_id, int) else None,
+                follow_enabled=should_follow and follow_actions_enabled,
+                follow_user_id=from_user_id if isinstance(from_user_id, int) else None,
                 block_enabled=should_block and block_actions_enabled,
                 block_user_id=from_user_id if isinstance(from_user_id, int) else None,
             )
@@ -288,6 +329,8 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
             like_enabled=should_like,
             like_target_type=like_target_type,
             like_target_id=like_target_id if isinstance(like_target_id, int) else None,
+            follow_enabled=should_follow and follow_actions_enabled,
+            follow_user_id=from_user_id if isinstance(from_user_id, int) else None,
             block_enabled=should_block and block_actions_enabled,
             block_user_id=from_user_id if isinstance(from_user_id, int) else None,
         )
@@ -308,6 +351,8 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
             like_enabled=should_like,
             like_target_type=like_target_type,
             like_target_id=like_target_id if isinstance(like_target_id, int) else None,
+            follow_enabled=should_follow and follow_actions_enabled,
+            follow_user_id=from_user_id if isinstance(from_user_id, int) else None,
             block_enabled=should_block and block_actions_enabled,
             block_user_id=from_user_id if isinstance(from_user_id, int) else None,
         )
@@ -325,6 +370,8 @@ async def auto_reply_notification(service: AstrBookService, notification: dict[s
         like_enabled=should_like,
         like_target_type=like_target_type,
         like_target_id=like_target_id if isinstance(like_target_id, int) else None,
+        follow_enabled=should_follow and follow_actions_enabled,
+        follow_user_id=from_user_id if isinstance(from_user_id, int) else None,
         block_enabled=should_block and block_actions_enabled,
         block_user_id=from_user_id if isinstance(from_user_id, int) else None,
     )
@@ -339,6 +386,7 @@ async def browse_once(service: AstrBookService) -> None:
         category = random.choice(allowlist)
 
     social_actions_enabled = service.get_config_bool("browse.autonomous_social_actions", default=True)
+    follow_actions_enabled = social_actions_enabled and service.get_config_bool("browse.autonomous_follow", default=False)
     block_actions_enabled = social_actions_enabled and service.get_config_bool("browse.autonomous_block", default=False)
 
     result = await service.client.browse_threads(page=1, page_size=10, category=category)
@@ -464,16 +512,17 @@ async def browse_once(service: AstrBookService) -> None:
 下面是帖子正文与部分楼层（text 格式输出，可能被截断）：
 {thread_text}
 
-现在请你决定是否需要回复，并决定是否执行额外动作（点赞/拉黑）。
+现在请你决定是否需要回复，并决定是否执行额外动作（点赞/关注/拉黑）。
 
 要求：
 1) 只输出严格 JSON，不要输出任何多余文字。
-2) JSON 格式：{{"should_reply": true/false, "content": "...", "diary": "...", "should_like": true/false, "block_thread_author": true/false}}
+2) JSON 格式：{{"should_reply": true/false, "content": "...", "diary": "...", "should_like": true/false, "follow_thread_author": true/false, "block_thread_author": true/false}}
 3) should_reply=false 时，content 为空字符串。
 4) 回复需有实质内容，避免纯水；语气自然、友好；不要发新帖。
 5) should_like=true 表示给该帖子点个赞。
-6) block_thread_author=true 仅在作者明显恶意骚扰/辱骂/广告刷屏时才使用，正常讨论必须为 false。
-7) diary 为逛帖日记/总结（建议填写，50-300字左右）。
+6) follow_thread_author=true 表示关注该帖作者（仅在其内容持续高质量时使用，默认 false）。
+7) block_thread_author=true 仅在作者明显恶意骚扰/辱骂/广告刷屏时才使用，正常讨论必须为 false。
+8) diary 为逛帖日记/总结（建议填写，50-300字左右）。
 """.strip()
 
     _, browse_reply_model = resolve_model_slot(service, task_key="llm.browse_reply_slot")
@@ -501,6 +550,7 @@ async def browse_once(service: AstrBookService) -> None:
     should_reply = bool(reply_data.get("should_reply", False))
     reply_content = str(reply_data.get("content", "") or "").strip()
     should_like = bool(reply_data.get("should_like", False))
+    follow_thread_author = bool(reply_data.get("follow_thread_author", False))
     block_thread_author = bool(reply_data.get("block_thread_author", False))
 
     if not should_reply or not reply_content:
@@ -516,6 +566,8 @@ async def browse_once(service: AstrBookService) -> None:
             like_enabled=should_like,
             like_target_type="thread",
             like_target_id=thread_id,
+            follow_enabled=follow_thread_author and follow_actions_enabled,
+            follow_user_id=thread_author_id,
             block_enabled=block_thread_author and block_actions_enabled,
             block_user_id=thread_author_id,
         )
@@ -536,6 +588,8 @@ async def browse_once(service: AstrBookService) -> None:
             like_enabled=should_like,
             like_target_type="thread",
             like_target_id=thread_id,
+            follow_enabled=follow_thread_author and follow_actions_enabled,
+            follow_user_id=thread_author_id,
             block_enabled=block_thread_author and block_actions_enabled,
             block_user_id=thread_author_id,
         )
@@ -553,6 +607,8 @@ async def browse_once(service: AstrBookService) -> None:
         like_enabled=should_like,
         like_target_type="thread",
         like_target_id=thread_id,
+        follow_enabled=follow_thread_author and follow_actions_enabled,
+        follow_user_id=thread_author_id,
         block_enabled=block_thread_author and block_actions_enabled,
         block_user_id=thread_author_id,
     )

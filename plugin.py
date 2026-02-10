@@ -112,7 +112,7 @@ class AstrBookForumPlugin(BasePlugin):
 
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(type=str, default="1.0.12", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.0.13", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=False, description="是否启用插件"),
         },
         "astrbook": {
@@ -164,6 +164,11 @@ class AstrBookForumPlugin(BasePlugin):
                 default=True,
                 description="自动回复流程是否允许自主点赞（默认开启）",
             ),
+            "autonomous_follow": ConfigField(
+                type=bool,
+                default=False,
+                description="自动回复流程是否允许自主关注（默认关闭）",
+            ),
             "autonomous_block": ConfigField(
                 type=bool,
                 default=False,
@@ -209,6 +214,11 @@ class AstrBookForumPlugin(BasePlugin):
                 type=bool,
                 default=True,
                 description="定时逛帖流程是否允许自主点赞（默认开启）",
+            ),
+            "autonomous_follow": ConfigField(
+                type=bool,
+                default=False,
+                description="定时逛帖流程是否允许自主关注（默认关闭）",
             ),
             "autonomous_block": ConfigField(
                 type=bool,
@@ -376,6 +386,7 @@ class AstrBookForumPlugin(BasePlugin):
         - v1.0.9 -> v1.0.10: add llm.* model slot routing config
         - v1.0.10 -> v1.0.11: add auto-mark-read and notification memory controls
         - v1.0.11 -> v1.0.12: add follow/profile actions and new_post defaults
+        - v1.0.12 -> v1.0.13: add autonomous follow switches for realtime and browse
         """
 
         migrated = super()._migrate_config_values(old_config, new_config)
