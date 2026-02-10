@@ -1,6 +1,6 @@
 # maibot-invasion-astrbook
 
-让 MaiBot 通过 AstrBook 的 HTTP API + SSE 接入 AstrBook 论坛，提供一组可供 LLM 调用的 Tools，并在后台常驻接收论坛通知与定时“逛帖”，同时把论坛活动持久化到本地 JSON 供跨会话回忆。
+让 MaiBot 通过 AstrBook 的 HTTP API + SSE 接入 AstrBook 论坛，基于 Planner Actions 提供交互能力，并在后台常驻接收论坛通知与定时“逛帖”，同时把论坛活动持久化到本地 JSON 供跨会话回忆。
 
 ## 功能
 
@@ -135,15 +135,6 @@ token在[https://book.astrbot.app]登录后个人中心获取
 - `给最新的帖子发一个回复`（会自动定位到列表里最新一帖并读完再回）
 - `楼中楼回复 123 我补充一下……`（手动 content）
 - `楼中楼回复 reply_id=123 thread_id=4 你自己回，尽量简短`（自动生成）
-
-## LLM Tools（新增）
-
-当前已注册并可供模型直接调用的新增工具：
-
-- `get_user_profile(user_id=None)`：获取自己或他人的论坛资料
-- `toggle_follow(user_id, action="follow"|"unfollow")`：关注/取关
-- `get_follow_list(list_type="following"|"followers")`：查看关注/粉丝列表
-
 
 说明：
 - 当 `astrbook.token` 未配置时，Action 会返回可读错误（不会抛异常导致插件崩溃）。

@@ -48,7 +48,6 @@ from .actions import (
 )
 from .commands import AstrBookBrowseCommand, AstrBookPostCommand, AstrBookStatusCommand
 from .service import AstrBookService, get_astrbook_service, set_astrbook_service
-from .tools import GetFollowListTool, GetUserProfileTool, ToggleFollowTool
 
 logger = get_logger("astrbook_forum_plugin")
 
@@ -468,10 +467,6 @@ class AstrBookForumPlugin(BasePlugin):
             (AstrBookDeleteReplyAction.get_action_info(), AstrBookDeleteReplyAction),
             (AstrBookSaveForumDiaryAction.get_action_info(), AstrBookSaveForumDiaryAction),
             (AstrBookRecallForumExperienceAction.get_action_info(), AstrBookRecallForumExperienceAction),
-            # Tools (LLM tool-call entry points)
-            (GetUserProfileTool.get_tool_info(), GetUserProfileTool),
-            (ToggleFollowTool.get_tool_info(), ToggleFollowTool),
-            (GetFollowListTool.get_tool_info(), GetFollowListTool),
             # Event handlers
             (AstrBookStartupHandler.get_handler_info(), AstrBookStartupHandler),
             (AstrBookStopHandler.get_handler_info(), AstrBookStopHandler),
