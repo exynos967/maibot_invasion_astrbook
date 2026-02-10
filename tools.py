@@ -13,6 +13,61 @@ logger = get_logger("astrbook_forum_tools")
 
 VALID_CATEGORIES = ["chat", "deals", "misc", "tech", "help", "intro", "acg"]
 
+NOTIFICATION_TYPE_LABELS: dict[str, str] = {
+    "reply": "💬 Reply",
+    "sub_reply": "↩️ Sub-reply",
+    "mention": "📢 Mention",
+    "like": "❤️ Like",
+    "new_post": "📝 New Post",
+    "follow": "👤 Follow",
+    "moderation": "🛡️ Moderation",
+}
+
+
+def _build_notifications_text(items: Any, total: int, *, marked_as_read: bool) -> str:
+    if not isinstance(items, list):
+        items = []
+
+    mark_text = ", marked as read" if marked_as_read else ""
+    lines = [f"📬 Notifications ({len(items)}/{total}{mark_text}):\n"]
+
+    for n in items:
+        if not isinstance(n, dict):
+            continue
+
+        notif_type = str(n.get("type", "") or "")
+        ntype = NOTIFICATION_TYPE_LABELS.get(notif_type, notif_type or "unknown")
+        from_user = n.get("from_user", {}) if isinstance(n.get("from_user"), dict) else {}
+        username = from_user.get("username", "Unknown") or "Unknown"
+        from_user_id = from_user.get("id") if isinstance(from_user.get("id"), int) else None
+        thread_id = n.get("thread_id")
+        thread_title = (n.get("thread_title") or "")[:30]
+        reply_id = n.get("reply_id")
+        content = (n.get("content_preview") or "")[:50]
+
+        lines.append(f"  {ntype} from @{username}")
+        if notif_type == "follow":
+            lines.append("   Content: This user followed you.")
+            if from_user_id is not None:
+                lines.append(f"   → To inspect: get_user_profile(user_id={from_user_id})")
+            else:
+                lines.append("   → To inspect: get_user_profile(user_id=...)")
+            lines.append("")
+            continue
+
+        lines.append(f"   Thread: [{thread_id}] {thread_title}")
+        if reply_id:
+            lines.append(f"   Reply ID: {reply_id}")
+        lines.append(f"   Content: {content}")
+        lines.append(
+            f"   → To respond: reply_floor(reply_id={reply_id}, content='...')"
+            if reply_id
+            else f"   → To respond: reply_thread(thread_id={thread_id}, content='...')"
+        )
+        lines.append("")
+
+    return "\n".join(lines)
+
 
 def _build_ephemeral_service(plugin_config: dict[str, Any]) -> AstrBookService:
     return AstrBookService(plugin_config)
@@ -36,6 +91,20 @@ class _AstrBookTool(BaseTool):
 
     def _get_memory(self) -> ForumMemory:
         return self._get_service().memory
+
+    async def _send_text_to_chat(self, text: str) -> bool:
+        if not self.chat_id:
+            return False
+        from src.plugin_system.apis import send_api
+
+        return await send_api.text_to_stream(text=text, stream_id=self.chat_id)
+
+    async def _send_image_to_chat(self, image_base64: str) -> bool:
+        if not self.chat_id:
+            return False
+        from src.plugin_system.apis import send_api
+
+        return await send_api.image_to_stream(image_base64=image_base64, stream_id=self.chat_id)
 
 
 class BrowseThreadsTool(_AstrBookTool):
@@ -428,82 +497,130 @@ class GetSubRepliesTool(_AstrBookTool):
 
 class CheckNotificationsTool(_AstrBookTool):
     name = "check_notifications"
-    description = "检查未读通知数量。"
-    parameters = []
+    description = "检查通知；可选拉取未读详情并自动标记已读。"
+    parameters = [
+        (
+            "fetch_details",
+            ToolParamType.BOOLEAN,
+            "是否拉取未读通知详情并自动标记已读，默认 false",
+            False,
+            None,
+        )
+    ]
 
     async def execute(self, function_args: dict[str, Any]) -> dict[str, Any]:
-        result = await self._get_client().check_notifications()
-        if "error" in result:
-            return {"name": self.name, "content": f"Failed to get notifications: {result['error']}"}
-        unread = result.get("unread", 0)
-        total = result.get("total", 0)
-        if unread and int(unread) > 0:
-            return {"name": self.name, "content": f"You have {unread} unread notifications (total: {total})"}
-        return {"name": self.name, "content": "No unread notifications"}
-
-
-class GetNotificationsTool(_AstrBookTool):
-    name = "get_notifications"
-    description = "获取通知列表（回复/提及/关注新帖/被关注）。返回内容包含建议的回复方式。"
-    parameters = [("unread_only", ToolParamType.BOOLEAN, "是否只获取未读通知，默认 true", False, None)]
-
-    async def execute(self, function_args: dict[str, Any]) -> dict[str, Any]:
-        unread_only = function_args.get("unread_only", True)
-        unread_only = bool(unread_only)
+        fetch_details = bool(function_args.get("fetch_details", False))
 
         svc = self._get_service()
-        result = await svc.client.get_notifications(unread_only=unread_only)
+        count_result = await svc.client.check_notifications()
+        if "error" in count_result:
+            return {"name": self.name, "content": f"Failed to get notifications: {count_result['error']}"}
+
+        unread = int(count_result.get("unread", 0) or 0)
+        total = int(count_result.get("total", unread) or unread)
+
+        if not fetch_details:
+            if unread > 0:
+                return {
+                    "name": self.name,
+                    "content": (
+                        f"You have {unread} unread notifications (total: {total}). "
+                        "Call again with fetch_details=true to read them."
+                    ),
+                }
+            return {"name": self.name, "content": "No unread notifications"}
+
+        result = await svc.client.get_notifications(unread_only=True)
         if "error" in result:
             return {"name": self.name, "content": f"Failed to get notifications: {result['error']}"}
 
         items = result.get("items", [])
-        total = result.get("total", 0)
-        if not items:
-            return {"name": self.name, "content": "No notifications"}
+        if not isinstance(items, list) or not items:
+            return {"name": self.name, "content": "No unread notifications"}
 
         svc.record_notifications_snapshot(items)
 
-        type_map = {"reply": "💬 Reply", "sub_reply": "↩️ Sub-reply", "mention": "📢 Mention", "new_post": "🆕 Followed New Post", "follow": "🙋 New Follower"}
-        lines = [f"📬 Notifications ({len(items)}/{total}):\n"]
-        for n in items if isinstance(items, list) else []:
-            if not isinstance(n, dict):
-                continue
-            notif_type = str(n.get("type", "") or "")
-            ntype = type_map.get(notif_type, notif_type)
-            from_user = n.get("from_user", {}) if isinstance(n.get("from_user"), dict) else {}
-            username = from_user.get("username", "Unknown") or "Unknown"
-            from_user_id = from_user.get("id") if isinstance(from_user.get("id"), int) else None
-            thread_id = n.get("thread_id")
-            thread_title = (n.get("thread_title") or "")[:30]
-            reply_id = n.get("reply_id")
-            content = (n.get("content_preview") or "")[:50]
-            is_read = "✓" if n.get("is_read") else "●"
-
-            lines.append(f"{is_read} {ntype} from @{username}")
-            if notif_type == "follow":
-                lines.append("   Content: This user followed you.")
-                if from_user_id is not None:
-                    lines.append(f"   → To inspect: get_user_profile(user_id={from_user_id})")
-                else:
-                    lines.append("   → To inspect: get_user_profile(user_id=...)")
-                lines.append("")
-                continue
-
-            lines.append(f"   Thread: [{thread_id}] {thread_title}")
-            if reply_id:
-                lines.append(f"   Reply ID: {reply_id}")
-            lines.append(f"   Content: {content}")
-            lines.append(
-                f"   → To respond: reply_floor(reply_id={reply_id}, content='...')"
-                if reply_id
-                else f"   → To respond: reply_thread(thread_id={thread_id}, content='...')"
+        mark_result = await svc.client.mark_notifications_read()
+        marked_as_read = "error" not in mark_result
+        if not marked_as_read:
+            logger.warning(
+                "[AstrBook] mark notifications read failed in check_notifications tool: %s",
+                mark_result.get("error"),
             )
-            lines.append("")
 
-        if svc.get_config_bool("realtime.auto_mark_read_on_fetch", default=True):
-            await svc.maybe_mark_notifications_read(reason="tool.get_notifications")
+        display_total = total if isinstance(total, int) and total > 0 else len(items)
+        content = _build_notifications_text(items, display_total, marked_as_read=marked_as_read)
+        return {"name": self.name, "content": content}
 
-        return {"name": self.name, "content": "\n".join(lines)}
+
+class GetNotificationsTool(_AstrBookTool):
+    name = "get_notifications"
+    description = "兼容旧调用。建议改用 check_notifications(fetch_details=true)。"
+    parameters = [
+        (
+            "unread_only",
+            ToolParamType.BOOLEAN,
+            "是否只获取未读通知，默认 true（兼容参数）",
+            False,
+            None,
+        )
+    ]
+
+    async def execute(self, function_args: dict[str, Any]) -> dict[str, Any]:
+        unread_only = bool(function_args.get("unread_only", True))
+        if unread_only:
+            return await CheckNotificationsTool.execute(self, {"fetch_details": True})
+
+        svc = self._get_service()
+        result = await svc.client.get_notifications(unread_only=False)
+        if "error" in result:
+            return {"name": self.name, "content": f"Failed to get notifications: {result['error']}"}
+
+        items = result.get("items", [])
+        if not isinstance(items, list) or not items:
+            return {"name": self.name, "content": "No notifications"}
+
+        svc.record_notifications_snapshot(items)
+        total = result.get("total", len(items))
+        display_total = total if isinstance(total, int) and total > 0 else len(items)
+        return {
+            "name": self.name,
+            "content": _build_notifications_text(items, display_total, marked_as_read=False),
+        }
+
+
+class ShareThreadTool(_AstrBookTool):
+    name = "share_thread"
+    description = "分享帖子：尝试发送帖子截图，并返回帖子链接。"
+    parameters = [("thread_id", ToolParamType.INTEGER, "要分享的帖子 ID", True, None)]
+
+    async def execute(self, function_args: dict[str, Any]) -> dict[str, Any]:
+        import base64
+
+        thread_id = function_args.get("thread_id")
+        if not isinstance(thread_id, int):
+            return {"name": self.name, "content": "thread_id must be a number"}
+
+        client = self._get_client()
+        result = await client.get_thread_share_screenshot(thread_id=thread_id)
+        share_link = str(result.get("share_link") or client.build_thread_link(thread_id))
+
+        if "error" in result:
+            error_text = str(result.get("error") or "unknown error")
+            status = result.get("status")
+            if status == 404:
+                return {"name": self.name, "content": error_text}
+            return {"name": self.name, "content": f"{error_text}，帖子链接: {share_link}"}
+
+        image_bytes = result.get("image_bytes")
+        if isinstance(image_bytes, (bytes, bytearray)) and image_bytes:
+            image_base64 = base64.b64encode(bytes(image_bytes)).decode("ascii")
+            sent = await self._send_image_to_chat(image_base64)
+            if sent:
+                await self._send_text_to_chat(f"📎 帖子链接: {share_link}")
+                return {"name": self.name, "content": f"已发送帖子 #{thread_id} 的截图和链接。"}
+
+        return {"name": self.name, "content": f"帖子链接: {share_link}"}
 
 
 class DeleteThreadTool(_AstrBookTool):
