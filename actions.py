@@ -95,6 +95,111 @@ def _extract_first_int(text: str) -> int | None:
         return None
 
 
+def _normalize_user_lookup_keyword(text: str) -> str:
+    keyword = str(text or "").strip().lstrip("@").strip()
+    if not keyword:
+        return ""
+
+    keyword = re.sub(r"^(?:一个|一下|一位|某个|某位|这个|那个)", "", keyword)
+    keyword = re.sub(r"^(?:用户名|用户|昵称|名字)\s*(?:叫|是|为)?", "", keyword)
+    keyword = re.sub(r"^(?:叫|是|为)", "", keyword)
+    keyword = keyword.strip()
+
+    keyword = re.sub(r"(?:的)?(?:bot|机器人)$", "", keyword, flags=re.IGNORECASE).strip()
+    keyword = keyword.strip("，。,.!?！？；;:：'\"“”‘’ ")
+    return keyword
+
+
+def _extract_user_keyword_for_follow(text: str) -> str | None:
+    text = str(text or "").strip()
+    if not text:
+        return None
+
+    patterns = (
+        r"(?:用户名|昵称|名字)\s*(?:叫|是|为|[:=：])\s*([^\s,，。!！?？]+)",
+        r"@([A-Za-z0-9_\-\u4e00-\u9fff]{1,32})",
+        r"(?:关注|取关|取消关注|follow|unfollow)\s*(?:用户)?\s*([^\s,，。!！?？]+)",
+    )
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE)
+        if not m:
+            continue
+        keyword = _normalize_user_lookup_keyword(m.group(1))
+        if keyword:
+            return keyword
+
+    return None
+
+
+def _pick_user_candidate_by_keyword(items: Any, keyword: str) -> dict[str, Any] | None:
+    if not isinstance(items, list):
+        return None
+
+    normalized_keyword = _normalize_user_lookup_keyword(keyword).lower()
+    if not normalized_keyword:
+        return None
+
+    candidates: list[dict[str, Any]] = []
+    exact_matches: list[dict[str, Any]] = []
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        user_id = _coerce_int(item.get("id"))
+        if user_id is None:
+            continue
+
+        username = str(item.get("username", "") or "").strip()
+        nickname = str(item.get("nickname", "") or "").strip()
+        normalized_names = {
+            _normalize_user_lookup_keyword(username).lower(),
+            _normalize_user_lookup_keyword(nickname).lower(),
+        }
+        normalized_names.discard("")
+
+        candidate = {
+            "id": user_id,
+            "username": username or "unknown",
+            "nickname": nickname,
+        }
+        candidates.append(candidate)
+
+        if normalized_keyword in normalized_names:
+            exact_matches.append(candidate)
+
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _format_user_candidates(items: Any, *, limit: int = 5) -> str:
+    lines = ["找到多个匹配用户，请指定 user_id（例如：关注 user_id=123）："]
+    if not isinstance(items, list):
+        return "\n".join(lines)
+
+    shown = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        user_id = _coerce_int(item.get("id"))
+        if user_id is None:
+            continue
+        username = str(item.get("username", "未知用户") or "未知用户")
+        nickname = str(item.get("nickname", "") or "").strip()
+        display_name = nickname or username
+        lines.append(f"- {display_name} (@{username})，user_id={user_id}")
+        shown += 1
+        if shown >= max(1, limit):
+            break
+
+    if shown == 0:
+        lines.append("（未获取到可用候选用户）")
+    return "\n".join(lines)
+
+
 
 def _extract_target_id_from_text(text: str, *, target_type: str | None = None) -> int | None:
     """Extract target id for like/reply operations with lightweight intent constraints.
@@ -1443,7 +1548,8 @@ class AstrBookToggleFollowAction(_AstrBookAction):
     parallel_action = False
 
     action_parameters = {
-        "user_id": "目标用户 ID（必填）",
+        "user_id": "目标用户 ID（可选；优先）",
+        "username": "目标用户名/昵称（可选；未提供 user_id 时自动搜索）",
         "action": "动作：follow 或 unfollow（可选，默认 follow）",
     }
     action_require = ["当用户明确要关注/取关某个用户时使用。"]
@@ -1460,9 +1566,43 @@ class AstrBookToggleFollowAction(_AstrBookAction):
         user_id = _coerce_int(self.action_data.get("user_id"))
         if user_id is None and user_req:
             user_id = _extract_first_int(user_req)
+
+        resolved_from_keyword = False
+        resolved_user_hint = ""
+
         if user_id is None:
-            await self.send_text("请提供 user_id，例如：关注用户 user_id=123")
-            return False, "missing user_id"
+            keyword = str(
+                self.action_data.get("username")
+                or self.action_data.get("user_name")
+                or self.action_data.get("keyword")
+                or ""
+            ).strip()
+            if not keyword:
+                keyword = _extract_user_keyword_for_follow(user_req) or ""
+
+            keyword = _normalize_user_lookup_keyword(keyword)
+            if not keyword:
+                await self.send_text("请提供 user_id，或提供用户名，例如：关注 用户名叫佩卡")
+                return False, "missing user_id or username"
+
+            search_result = await self._get_client().search_users(keyword=keyword, limit=10)
+            if "error" in search_result:
+                await self.send_text(f"搜索用户失败：{search_result['error']}")
+                return False, "search_users failed"
+
+            items = search_result.get("items", [])
+            matched = _pick_user_candidate_by_keyword(items, keyword)
+            if not matched:
+                if isinstance(items, list) and len(items) > 1:
+                    await self.send_text(_format_user_candidates(items))
+                    return False, "ambiguous user keyword"
+                await self.send_text(f"未找到与“{keyword}”匹配的用户。")
+                return False, "user not found"
+
+            user_id = matched["id"]
+            resolved_from_keyword = True
+            resolved_name = matched.get("nickname") or matched.get("username") or "未知用户"
+            resolved_user_hint = f"（已匹配 @{resolved_name}, user_id={user_id}）"
 
         action = str(self.action_data.get("action", "") or "").strip().lower()
         if action not in {"follow", "unfollow"}:
@@ -1479,6 +1619,9 @@ class AstrBookToggleFollowAction(_AstrBookAction):
         msg = str(result.get("message", "") or "").strip()
         if not msg:
             msg = f"已{'关注' if action == 'follow' else '取消关注'} user_id={user_id}。"
+        if resolved_from_keyword and resolved_user_hint:
+            msg = f"{msg}\n{resolved_user_hint}"
+
         await self.send_text(msg)
         return True, "toggled follow"
 
