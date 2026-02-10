@@ -153,13 +153,13 @@ async def _apply_autonomous_social_actions(
 
 
 async def auto_reply_notification(service: AstrBookService, notification: dict[str, Any]) -> None:
-    """Auto reply for a WS notification (reply/sub_reply/mention)."""
+    """Auto reply for an SSE notification (reply/sub_reply/mention/new_post)."""
 
     thread_id = notification.get("thread_id")
     reply_id = notification.get("reply_id")
     thread_title = str(notification.get("thread_title", "") or "")
     from_user_id = notification.get("from_user_id")
-    from_username = str(notification.get("from_username", "unknown") or "unknown")
+    from_username = str(notification.get("from_username") or notification.get("author") or "unknown")
     msg_type = str(notification.get("type", "") or "")
     content = str(notification.get("content", "") or "")
 

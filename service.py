@@ -408,7 +408,7 @@ class AstrBookService:
         if msg_type == "pong":
             return
 
-        if msg_type in ("reply", "sub_reply", "mention"):
+        if msg_type in ("reply", "sub_reply", "mention", "new_post", "follow"):
             await self._handle_notification(data)
             return
         if msg_type == "new_thread":
@@ -421,7 +421,7 @@ class AstrBookService:
         self,
         *,
         notif_type: str,
-        thread_id: int,
+        thread_id: int | None,
         thread_title: str,
         from_username: str,
         preview: str,
@@ -429,25 +429,46 @@ class AstrBookService:
         notification_id: int | None = None,
         is_read: bool | None = None,
     ) -> None:
-        if notif_type not in {"mention", "reply", "sub_reply"}:
+        if notif_type not in {"mention", "reply", "sub_reply", "new_post", "follow"}:
             return
 
         metadata: dict[str, Any] = {
-            "thread_id": thread_id,
-            "thread_title": thread_title,
-            "reply_id": reply_id,
             "from_user": from_username,
             "notification_type": notif_type,
         }
+        if isinstance(thread_id, int):
+            metadata["thread_id"] = thread_id
+            metadata["thread_title"] = thread_title
+        if isinstance(reply_id, int):
+            metadata["reply_id"] = reply_id
         if isinstance(notification_id, int):
             metadata["notification_id"] = notification_id
         if is_read is not None:
             metadata["is_read"] = bool(is_read)
 
+        if notif_type == "follow":
+            self.memory.add_memory(
+                "followed_by_user",
+                f"@{from_username} 关注了我。",
+                metadata=metadata,
+            )
+            return
+
+        if not isinstance(thread_id, int):
+            return
+
         if notif_type == "mention":
             self.memory.add_memory(
                 "mentioned",
                 f"我在《{thread_title}》中被 @{from_username} 提及: {preview[:50]}...",
+                metadata=metadata,
+            )
+            return
+
+        if notif_type == "new_post":
+            self.memory.add_memory(
+                "followed_new_post",
+                f"我关注的 @{from_username} 发布了新帖《{thread_title}》: {preview[:50]}...",
                 metadata=metadata,
             )
             return
@@ -482,15 +503,12 @@ class AstrBookService:
                 existing_notification_ids.add(notif_id)
 
             notif_type = str(item.get("type", "") or "")
-            if notif_type not in {"mention", "reply", "sub_reply"}:
+            if notif_type not in {"mention", "reply", "sub_reply", "new_post", "follow"}:
                 continue
 
-            thread_id = item.get("thread_id")
-            if not isinstance(thread_id, int):
-                continue
-
+            thread_id = item.get("thread_id") if isinstance(item.get("thread_id"), int) else None
             from_user = item.get("from_user", {}) if isinstance(item.get("from_user"), dict) else {}
-            username = str(from_user.get("username", "unknown") or "unknown")
+            username = str(from_user.get("username") or item.get("from_username") or item.get("author") or "unknown")
             thread_title = str(item.get("thread_title", "") or "")
             reply_id = item.get("reply_id") if isinstance(item.get("reply_id"), int) else None
             preview = str(item.get("content_preview") or item.get("content") or "")
@@ -552,8 +570,19 @@ class AstrBookService:
         reply_id = data.get("reply_id")
         thread_title = str(data.get("thread_title", "") or "")
         from_user_id = data.get("from_user_id")
-        from_username = str(data.get("from_username", "unknown") or "unknown")
+        from_username = str(data.get("from_username") or data.get("author") or "unknown")
         content = str(data.get("content", "") or "")
+
+        if msg_type == "follow":
+            if self._should_record_notification_events():
+                self._record_notification_event(
+                    notif_type=msg_type,
+                    thread_id=None,
+                    thread_title="",
+                    from_username=from_username,
+                    preview=content,
+                )
+            return
 
         if not isinstance(thread_id, int):
             return
@@ -572,7 +601,7 @@ class AstrBookService:
         if not self.get_config_bool("realtime.auto_reply", default=True):
             return
 
-        reply_types = self.get_config_list_str("realtime.reply_types") or ["mention", "reply", "sub_reply"]
+        reply_types = self.get_config_list_str("realtime.reply_types") or ["mention", "reply", "sub_reply", "new_post"]
         if msg_type not in reply_types:
             return
 

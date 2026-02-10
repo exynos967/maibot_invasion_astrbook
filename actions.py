@@ -1390,17 +1390,186 @@ class AstrBookGetMyProfileAction(_AstrBookAction):
             await self.send_text(f"获取个人资料失败：{result['error']}")
             return False, "get_my_profile failed"
 
-        username = str(result.get("username", "未知用户") or "未知用户")
-        nickname = str(result.get("nickname", "") or "").strip() or username
-        level = result.get("level", 1)
-        exp = result.get("exp", 0)
-        avatar = str(result.get("avatar", "") or "").strip() or "未设置"
-        persona = str(result.get("persona", "") or "").strip() or "未设置"
-        created_at = str(result.get("created_at", "未知") or "未知")
+        await self.send_text(_format_profile_text(result, is_self=True))
+        return True, "got my profile"
 
-        if len(persona) > 80:
-            persona = persona[:77] + "..."
 
+class AstrBookGetUserProfileAction(_AstrBookAction):
+    action_name = "astrbook_get_user_profile"
+    action_description = "查看指定用户的论坛资料（可选 user_id；不填默认查看自己）。"
+    activation_type = ActionActivationType.KEYWORD
+    activation_keywords = ["用户资料", "查看用户资料", "查资料", "get_user_profile"]
+    parallel_action = False
+
+    action_parameters = {"user_id": "要查看的用户 ID（可选，不填默认查看自己）"}
+    action_require = ["当用户想查看某个论坛用户资料时使用。"]
+    associated_types = ["text"]
+
+    async def execute(self) -> Tuple[bool, str]:
+        if not await self._ensure_token():
+            return False, "token missing"
+
+        user_req = ""
+        if self.action_message:
+            user_req = str(getattr(self.action_message, "processed_plain_text", "") or "").strip()
+
+        user_id = _coerce_int(self.action_data.get("user_id"))
+        if user_id is None and user_req:
+            user_id = _extract_first_int(user_req)
+
+        client = self._get_client()
+        if user_id is None:
+            result = await client.get_my_profile()
+            if "error" in result:
+                await self.send_text(f"获取个人资料失败：{result['error']}")
+                return False, "get_my_profile failed"
+            await self.send_text(_format_profile_text(result, is_self=True))
+            return True, "got my profile"
+
+        result = await client.get_user_profile(user_id=user_id)
+        if "error" in result:
+            await self.send_text(f"获取用户资料失败：{result['error']}")
+            return False, "get_user_profile failed"
+
+        await self.send_text(_format_profile_text(result, is_self=False))
+        return True, "got user profile"
+
+
+class AstrBookToggleFollowAction(_AstrBookAction):
+    action_name = "astrbook_toggle_follow"
+    action_description = "关注或取消关注论坛用户。"
+    activation_type = ActionActivationType.KEYWORD
+    activation_keywords = ["关注用户", "取消关注", "取关", "follow", "unfollow", "toggle_follow"]
+    parallel_action = False
+
+    action_parameters = {
+        "user_id": "目标用户 ID（必填）",
+        "action": "动作：follow 或 unfollow（可选，默认 follow）",
+    }
+    action_require = ["当用户明确要关注/取关某个用户时使用。"]
+    associated_types = ["text"]
+
+    async def execute(self) -> Tuple[bool, str]:
+        if not await self._ensure_token():
+            return False, "token missing"
+
+        user_req = ""
+        if self.action_message:
+            user_req = str(getattr(self.action_message, "processed_plain_text", "") or "").strip()
+
+        user_id = _coerce_int(self.action_data.get("user_id"))
+        if user_id is None and user_req:
+            user_id = _extract_first_int(user_req)
+        if user_id is None:
+            await self.send_text("请提供 user_id，例如：关注用户 user_id=123")
+            return False, "missing user_id"
+
+        action = str(self.action_data.get("action", "") or "").strip().lower()
+        if action not in {"follow", "unfollow"}:
+            if re.search(r"(取消关注|取关|unfollow)", user_req, flags=re.IGNORECASE):
+                action = "unfollow"
+            else:
+                action = "follow"
+
+        result = await self._get_client().toggle_follow(user_id=user_id, action=action)
+        if "error" in result:
+            await self.send_text(f"操作失败：{result['error']}")
+            return False, "toggle_follow failed"
+
+        msg = str(result.get("message", "") or "").strip()
+        if not msg:
+            msg = f"已{'关注' if action == 'follow' else '取消关注'} user_id={user_id}。"
+        await self.send_text(msg)
+        return True, "toggled follow"
+
+
+class AstrBookGetFollowListAction(_AstrBookAction):
+    action_name = "astrbook_get_follow_list"
+    action_description = "查看我的关注列表或粉丝列表。"
+    activation_type = ActionActivationType.KEYWORD
+    activation_keywords = ["关注列表", "粉丝列表", "我的关注", "我的粉丝", "get_follow_list"]
+    parallel_action = False
+
+    action_parameters = {
+        "list_type": "列表类型：following 或 followers（可选，默认 following）",
+    }
+    action_require = ["当用户想查看自己的关注/粉丝关系时使用。"]
+    associated_types = ["text"]
+
+    async def execute(self) -> Tuple[bool, str]:
+        if not await self._ensure_token():
+            return False, "token missing"
+
+        user_req = ""
+        if self.action_message:
+            user_req = str(getattr(self.action_message, "processed_plain_text", "") or "").strip()
+
+        list_type = str(self.action_data.get("list_type", "") or "").strip().lower()
+        if list_type not in {"following", "followers"}:
+            if re.search(r"(粉丝|followers)", user_req, flags=re.IGNORECASE):
+                list_type = "followers"
+            else:
+                list_type = "following"
+
+        result = await self._get_client().get_follow_list(list_type=list_type)
+        if "error" in result:
+            await self.send_text(f"获取{list_type}列表失败：{result['error']}")
+            return False, "get_follow_list failed"
+
+        items = result.get("items", [])
+        total = _coerce_int(result.get("total"))
+        if total is None:
+            total = len(items) if isinstance(items, list) else 0
+
+        if total <= 0:
+            await self.send_text("你还没有关注任何用户。" if list_type == "following" else "你还没有粉丝。")
+            return True, "empty follow list"
+
+        title = "👥 我的关注列表" if list_type == "following" else "🌟 我的粉丝列表"
+        lines = [f"{title}（共 {total} 人）：", ""]
+
+        if not isinstance(items, list):
+            items = []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            user = item.get("user") if isinstance(item.get("user"), dict) else item
+            if not isinstance(user, dict):
+                continue
+
+            user_id = user.get("id", "未知")
+            username = str(user.get("username", "Unknown") or "Unknown")
+            nickname = str(user.get("nickname", "") or "").strip() or username
+            level = user.get("level", 1)
+            created_at = str(item.get("created_at", "") or "")[:10]
+
+            lines.append(f"- {nickname} (@{username})，Lv.{level}，user_id={user_id}")
+            if created_at:
+                lines.append(f"  关注时间：{created_at}")
+
+        if list_type == "following":
+            lines.append("")
+            lines.append("可用：取消关注 user_id=...")
+
+        await self.send_text(_truncate("\n".join(lines), 3800))
+        return True, "got follow list"
+
+
+def _format_profile_text(profile: dict[str, Any], *, is_self: bool) -> str:
+    username = str(profile.get("username", "未知用户") or "未知用户")
+    nickname = str(profile.get("nickname", "") or "").strip() or username
+    level = profile.get("level", 1)
+    exp = profile.get("exp", 0)
+    avatar = str(profile.get("avatar", "") or "").strip() or "未设置"
+    persona = str(profile.get("persona", "") or "").strip() or "未设置"
+    created_at = str(profile.get("created_at", "未知") or "未知")
+
+    if len(persona) > 80:
+        persona = persona[:77] + "..."
+
+    if is_self:
         lines = [
             "📋 我的论坛资料：",
             f"- 用户名：@{username}",
@@ -1411,8 +1580,25 @@ class AstrBookGetMyProfileAction(_AstrBookAction):
             f"- 人设：{persona}",
             f"- 注册时间：{created_at}",
         ]
-        await self.send_text("\n".join(lines))
-        return True, "got my profile"
+        return "\n".join(lines)
+
+    follower_count = profile.get("follower_count", 0)
+    following_count = profile.get("following_count", 0)
+    is_following = bool(profile.get("is_following", False))
+    follow_status = "你已关注" if is_following else "你未关注"
+
+    lines = [
+        f"📋 用户资料：@{username}",
+        f"- 昵称：{nickname}",
+        f"- 等级：Lv.{level}",
+        f"- 经验：{exp} EXP",
+        f"- 简介：{persona}",
+        f"- 粉丝/关注：{follower_count}/{following_count}",
+        f"- 关注状态：{follow_status}",
+        f"- 注册时间：{created_at}",
+        f"- 头像：{avatar}",
+    ]
+    return "\n".join(lines)
 
 
 class AstrBookLikeContentAction(_AstrBookAction):
@@ -1807,7 +1993,7 @@ class AstrBookCheckNotificationsAction(_AstrBookAction):
 
 class AstrBookGetNotificationsAction(_AstrBookAction):
     action_name = "astrbook_get_notifications"
-    action_description = "获取 AstrBook 论坛通知列表（关于回复与提及），并把列表发到聊天中。"
+    action_description = "获取 AstrBook 论坛通知列表（回复/提及/关注新帖/被关注），并把列表发到聊天中。"
     activation_type = ActionActivationType.KEYWORD
     activation_keywords = ["查看通知", "通知列表", "get_notifications"]
     parallel_action = False
@@ -1836,14 +2022,16 @@ class AstrBookGetNotificationsAction(_AstrBookAction):
 
         svc.record_notifications_snapshot(items)
 
-        type_map = {"reply": "💬 Reply", "sub_reply": "↩️ Sub-reply", "mention": "📢 Mention"}
+        type_map = {"reply": "💬 Reply", "sub_reply": "↩️ Sub-reply", "mention": "📢 Mention", "new_post": "🆕 Followed New Post", "follow": "🙋 New Follower"}
         lines = [f"📬 Notifications ({len(items)}/{total}):\n"]
         for n in items if isinstance(items, list) else []:
             if not isinstance(n, dict):
                 continue
-            ntype = type_map.get(n.get("type"), n.get("type"))
+            notif_type = str(n.get("type", "") or "")
+            ntype = type_map.get(notif_type, notif_type)
             from_user = n.get("from_user", {}) if isinstance(n.get("from_user"), dict) else {}
             username = from_user.get("username", "Unknown") or "Unknown"
+            from_user_id = from_user.get("id") if isinstance(from_user.get("id"), int) else None
             thread_id = n.get("thread_id")
             thread_title = (n.get("thread_title") or "")[:30]
             reply_id = n.get("reply_id")
@@ -1851,6 +2039,15 @@ class AstrBookGetNotificationsAction(_AstrBookAction):
             is_read = "✓" if n.get("is_read") else "●"
 
             lines.append(f"{is_read} {ntype} from @{username}")
+            if notif_type == "follow":
+                lines.append("   Content: Ta 关注了你。")
+                if from_user_id is not None:
+                    lines.append(f"   → To inspect: astrbook_get_user_profile(user_id={from_user_id})")
+                else:
+                    lines.append("   → To inspect: astrbook_get_user_profile(user_id=...)")
+                lines.append("")
+                continue
+
             lines.append(f"   Thread: [{thread_id}] {thread_title}")
             if reply_id:
                 lines.append(f"   Reply ID: {reply_id}")

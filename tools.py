@@ -154,6 +154,149 @@ class ReadThreadTool(_AstrBookTool):
         return {"name": self.name, "content": "Got thread but format is abnormal"}
 
 
+def _format_profile_text(profile: dict[str, Any], *, is_self: bool) -> str:
+    username = str(profile.get("username", "Unknown") or "Unknown")
+    nickname = str(profile.get("nickname", "") or "").strip() or username
+    level = profile.get("level", 1)
+    exp = profile.get("exp", 0)
+    avatar = str(profile.get("avatar", "") or "").strip() or "Not set"
+    persona = str(profile.get("persona", "") or "").strip() or "Not set"
+    created_at = str(profile.get("created_at", "Unknown") or "Unknown")
+
+    if len(persona) > 80:
+        persona = persona[:77] + "..."
+
+    if is_self:
+        lines = [
+            "📋 My Forum Profile:",
+            f"  Username: @{username}",
+            f"  Nickname: {nickname}",
+            f"  Level: Lv.{level}",
+            f"  Experience: {exp} EXP",
+            f"  Avatar: {avatar}",
+            f"  Persona: {persona}",
+            f"  Registered: {created_at}",
+        ]
+        return "\n".join(lines)
+
+    follower_count = profile.get("follower_count", 0)
+    following_count = profile.get("following_count", 0)
+    is_following = bool(profile.get("is_following", False))
+    follow_status = "✅ You are following this user" if is_following else "❌ You are not following this user"
+
+    lines = [
+        f"📋 User Profile: @{username}",
+        f"  Nickname: {nickname}",
+        f"  Level: Lv.{level}",
+        f"  Experience: {exp} EXP",
+        f"  Bio: {persona}",
+        f"  Followers: {follower_count} | Following: {following_count}",
+        f"  Follow Status: {follow_status}",
+        f"  Registered: {created_at}",
+        f"  Avatar: {avatar}",
+    ]
+    return "\n".join(lines)
+
+
+class GetUserProfileTool(_AstrBookTool):
+    name = "get_user_profile"
+    description = "Get forum profile (self or by user_id)."
+    parameters = [("user_id", ToolParamType.INTEGER, "User ID to query (optional)", False, None)]
+
+    async def execute(self, function_args: dict[str, Any]) -> dict[str, Any]:
+        user_id = function_args.get("user_id")
+        client = self._get_client()
+
+        if isinstance(user_id, int):
+            result = await client.get_user_profile(user_id=user_id)
+            if "error" in result:
+                return {"name": self.name, "content": f"Failed to get user profile: {result['error']}"}
+            return {"name": self.name, "content": _format_profile_text(result, is_self=False)}
+
+        result = await client.get_my_profile()
+        if "error" in result:
+            return {"name": self.name, "content": f"Failed to get profile: {result['error']}"}
+        return {"name": self.name, "content": _format_profile_text(result, is_self=True)}
+
+
+class ToggleFollowTool(_AstrBookTool):
+    name = "toggle_follow"
+    description = "Follow or unfollow a user."
+    parameters = [
+        ("user_id", ToolParamType.INTEGER, "Target user ID", True, None),
+        ("action", ToolParamType.STRING, "follow or unfollow (default: follow)", False, ["follow", "unfollow"]),
+    ]
+
+    async def execute(self, function_args: dict[str, Any]) -> dict[str, Any]:
+        user_id = function_args.get("user_id")
+        action = str(function_args.get("action", "follow") or "follow").strip().lower()
+
+        if not isinstance(user_id, int):
+            return {"name": self.name, "content": "user_id must be a number"}
+        if action not in {"follow", "unfollow"}:
+            return {"name": self.name, "content": "action must be follow or unfollow"}
+
+        result = await self._get_client().toggle_follow(user_id=user_id, action=action)
+        if "error" in result:
+            return {"name": self.name, "content": f"Failed to {action} user: {result['error']}"}
+
+        msg = str(result.get("message", "") or "").strip()
+        if not msg:
+            msg = f"Successfully {'followed' if action == 'follow' else 'unfollowed'} user_id={user_id}."
+        return {"name": self.name, "content": msg}
+
+
+class GetFollowListTool(_AstrBookTool):
+    name = "get_follow_list"
+    description = "Get your following list or followers list."
+    parameters = [
+        ("list_type", ToolParamType.STRING, "following or followers (default: following)", False, ["following", "followers"])
+    ]
+
+    async def execute(self, function_args: dict[str, Any]) -> dict[str, Any]:
+        list_type = str(function_args.get("list_type", "following") or "following").strip().lower()
+        if list_type not in {"following", "followers"}:
+            return {"name": self.name, "content": "list_type must be following or followers"}
+
+        result = await self._get_client().get_follow_list(list_type=list_type)
+        if "error" in result:
+            return {"name": self.name, "content": f"Failed to get {list_type} list: {result['error']}"}
+
+        items = result.get("items", [])
+        total = result.get("total", 0)
+        if not isinstance(total, int):
+            total = len(items) if isinstance(items, list) else 0
+
+        if total == 0:
+            empty_msg = "You are not following anyone yet." if list_type == "following" else "You don't have any followers yet."
+            return {"name": self.name, "content": empty_msg}
+
+        title = "👥 Following List" if list_type == "following" else "🌟 Followers List"
+        lines = [f"{title} ({total} users):", ""]
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+
+            user = item.get("user") if isinstance(item.get("user"), dict) else item
+            if not isinstance(user, dict):
+                continue
+
+            username = str(user.get("username", "Unknown") or "Unknown")
+            nickname = str(user.get("nickname", "") or "").strip() or username
+            level = user.get("level", 1)
+            user_id = user.get("id", "unknown")
+            created_at = str(item.get("created_at", "") or "")[:10]
+
+            lines.append(f"  • {nickname} (@{username}) - Lv.{level}")
+            lines.append(f"    User ID: {user_id} | Since: {created_at or 'N/A'}")
+            lines.append("")
+
+        if list_type == "following":
+            lines.append("Use toggle_follow(user_id=..., action='unfollow') to unfollow someone.")
+
+        return {"name": self.name, "content": "\n".join(lines)}
+
+
 class CreateThreadTool(_AstrBookTool):
     name = "create_thread"
     description = "在 AstrBook 论坛发布一个新帖子。"
@@ -301,7 +444,7 @@ class CheckNotificationsTool(_AstrBookTool):
 
 class GetNotificationsTool(_AstrBookTool):
     name = "get_notifications"
-    description = "获取通知列表（关于回复与提及）。返回内容包含建议的回复方式。"
+    description = "获取通知列表（回复/提及/关注新帖/被关注）。返回内容包含建议的回复方式。"
     parameters = [("unread_only", ToolParamType.BOOLEAN, "是否只获取未读通知，默认 true", False, None)]
 
     async def execute(self, function_args: dict[str, Any]) -> dict[str, Any]:
@@ -320,14 +463,16 @@ class GetNotificationsTool(_AstrBookTool):
 
         svc.record_notifications_snapshot(items)
 
-        type_map = {"reply": "💬 Reply", "sub_reply": "↩️ Sub-reply", "mention": "📢 Mention"}
+        type_map = {"reply": "💬 Reply", "sub_reply": "↩️ Sub-reply", "mention": "📢 Mention", "new_post": "🆕 Followed New Post", "follow": "🙋 New Follower"}
         lines = [f"📬 Notifications ({len(items)}/{total}):\n"]
         for n in items if isinstance(items, list) else []:
             if not isinstance(n, dict):
                 continue
-            ntype = type_map.get(n.get("type"), n.get("type"))
+            notif_type = str(n.get("type", "") or "")
+            ntype = type_map.get(notif_type, notif_type)
             from_user = n.get("from_user", {}) if isinstance(n.get("from_user"), dict) else {}
             username = from_user.get("username", "Unknown") or "Unknown"
+            from_user_id = from_user.get("id") if isinstance(from_user.get("id"), int) else None
             thread_id = n.get("thread_id")
             thread_title = (n.get("thread_title") or "")[:30]
             reply_id = n.get("reply_id")
@@ -335,6 +480,15 @@ class GetNotificationsTool(_AstrBookTool):
             is_read = "✓" if n.get("is_read") else "●"
 
             lines.append(f"{is_read} {ntype} from @{username}")
+            if notif_type == "follow":
+                lines.append("   Content: This user followed you.")
+                if from_user_id is not None:
+                    lines.append(f"   → To inspect: get_user_profile(user_id={from_user_id})")
+                else:
+                    lines.append("   → To inspect: get_user_profile(user_id=...)")
+                lines.append("")
+                continue
+
             lines.append(f"   Thread: [{thread_id}] {thread_title}")
             if reply_id:
                 lines.append(f"   Reply ID: {reply_id}")

@@ -29,8 +29,10 @@ from .actions import (
     AstrBookCreateThreadAction,
     AstrBookDeleteReplyAction,
     AstrBookDeleteThreadAction,
+    AstrBookGetFollowListAction,
     AstrBookGetBlockListAction,
     AstrBookGetMyProfileAction,
+    AstrBookGetUserProfileAction,
     AstrBookGetNotificationsAction,
     AstrBookGetSubRepliesAction,
     AstrBookLikeContentAction,
@@ -41,10 +43,12 @@ from .actions import (
     AstrBookSaveForumDiaryAction,
     AstrBookSearchThreadsAction,
     AstrBookSearchUsersAction,
+    AstrBookToggleFollowAction,
     AstrBookUnblockUserAction,
 )
 from .commands import AstrBookBrowseCommand, AstrBookPostCommand, AstrBookStatusCommand
 from .service import AstrBookService, get_astrbook_service, set_astrbook_service
+from .tools import GetFollowListTool, GetUserProfileTool, ToggleFollowTool
 
 logger = get_logger("astrbook_forum_plugin")
 
@@ -109,7 +113,7 @@ class AstrBookForumPlugin(BasePlugin):
 
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(type=str, default="1.0.11", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.0.12", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=False, description="是否启用插件"),
         },
         "astrbook": {
@@ -141,7 +145,7 @@ class AstrBookForumPlugin(BasePlugin):
             ),
             "reply_types": ConfigField(
                 type=list,
-                default=["mention", "reply", "sub_reply"],
+                default=["mention", "reply", "sub_reply", "new_post"],
                 description="允许自动回复的通知类型",
                 item_type="string",
             ),
@@ -372,6 +376,7 @@ class AstrBookForumPlugin(BasePlugin):
         - v1.0.8 -> v1.0.9: realtime transport migrated from WebSocket to SSE
         - v1.0.9 -> v1.0.10: add llm.* model slot routing config
         - v1.0.10 -> v1.0.11: add auto-mark-read and notification memory controls
+        - v1.0.11 -> v1.0.12: add follow/profile actions and new_post defaults
         """
 
         migrated = super()._migrate_config_values(old_config, new_config)
@@ -406,6 +411,26 @@ class AstrBookForumPlugin(BasePlugin):
         except Exception:
             pass
 
+        # Add `new_post` to reply_types for users who kept default legacy types.
+        try:
+            old_realtime = old_config.get("realtime", {}) if isinstance(old_config.get("realtime"), dict) else {}
+            realtime = migrated.get("realtime", {}) if isinstance(migrated.get("realtime"), dict) else {}
+
+            old_reply_types = old_realtime.get("reply_types")
+            old_normalized: list[str] = []
+            if isinstance(old_reply_types, list):
+                old_normalized = [str(item).strip() for item in old_reply_types if str(item).strip()]
+
+            reply_types = realtime.get("reply_types")
+            if isinstance(reply_types, list):
+                normalized = [str(item).strip() for item in reply_types if str(item).strip()]
+                if "new_post" not in normalized and (not old_normalized or set(old_normalized) == {"mention", "reply", "sub_reply"}):
+                    normalized.append("new_post")
+                    realtime["reply_types"] = normalized
+                    migrated["realtime"] = realtime
+        except Exception:
+            pass
+
         return migrated
 
     def __init__(self, *args, **kwargs):
@@ -424,6 +449,9 @@ class AstrBookForumPlugin(BasePlugin):
             (AstrBookSearchThreadsAction.get_action_info(), AstrBookSearchThreadsAction),
             (AstrBookReadThreadAction.get_action_info(), AstrBookReadThreadAction),
             (AstrBookGetMyProfileAction.get_action_info(), AstrBookGetMyProfileAction),
+            (AstrBookGetUserProfileAction.get_action_info(), AstrBookGetUserProfileAction),
+            (AstrBookToggleFollowAction.get_action_info(), AstrBookToggleFollowAction),
+            (AstrBookGetFollowListAction.get_action_info(), AstrBookGetFollowListAction),
             (AstrBookLikeContentAction.get_action_info(), AstrBookLikeContentAction),
             (AstrBookGetBlockListAction.get_action_info(), AstrBookGetBlockListAction),
             (AstrBookBlockUserAction.get_action_info(), AstrBookBlockUserAction),
@@ -440,6 +468,10 @@ class AstrBookForumPlugin(BasePlugin):
             (AstrBookDeleteReplyAction.get_action_info(), AstrBookDeleteReplyAction),
             (AstrBookSaveForumDiaryAction.get_action_info(), AstrBookSaveForumDiaryAction),
             (AstrBookRecallForumExperienceAction.get_action_info(), AstrBookRecallForumExperienceAction),
+            # Tools (LLM tool-call entry points)
+            (GetUserProfileTool.get_tool_info(), GetUserProfileTool),
+            (ToggleFollowTool.get_tool_info(), ToggleFollowTool),
+            (GetFollowListTool.get_tool_info(), GetFollowListTool),
             # Event handlers
             (AstrBookStartupHandler.get_handler_info(), AstrBookStartupHandler),
             (AstrBookStopHandler.get_handler_info(), AstrBookStopHandler),

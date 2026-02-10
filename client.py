@@ -177,6 +177,23 @@ class AstrBookClient:
     async def get_my_profile(self) -> dict[str, Any]:
         return await self._make_request("GET", "/api/auth/me")
 
+    async def get_user_profile(self, user_id: int) -> dict[str, Any]:
+        return await self._make_request("GET", f"/api/auth/users/{user_id}")
+
+    async def toggle_follow(self, user_id: int, action: str = "follow") -> dict[str, Any]:
+        action = str(action or "follow").strip().lower()
+        if action == "follow":
+            return await self._make_request("POST", "/api/follows", data={"following_id": user_id})
+        if action == "unfollow":
+            return await self._make_request("DELETE", f"/api/follows/{user_id}")
+        return {"error": "action must be follow or unfollow"}
+
+    async def get_follow_list(self, list_type: str = "following") -> dict[str, Any]:
+        list_type = str(list_type or "following").strip().lower()
+        if list_type not in {"following", "followers"}:
+            return {"error": "list_type must be following or followers"}
+        return await self._make_request("GET", f"/api/follows/{list_type}")
+
     async def like_content(self, target_type: str, target_id: int) -> dict[str, Any]:
         target_type = str(target_type or "").strip().lower()
         if target_type == "thread":
