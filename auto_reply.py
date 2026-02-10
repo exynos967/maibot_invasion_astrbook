@@ -147,10 +147,15 @@ async def _apply_autonomous_social_actions(
                     )
             else:
                 msg = str(follow_result.get("message", "") or "").strip()
-                suffix = f"（{msg}）" if msg else ""
+                if bool(follow_result.get("already_following", False)):
+                    summary = f"{scene}时检测到 user_id={follow_user_id} 已在关注列表中。"
+                else:
+                    suffix = f"（{msg}）" if msg else ""
+                    summary = f"{scene}时已自主关注 user_id={follow_user_id}{suffix}"
+
                 service.memory.add_memory(
                     "auto_action",
-                    f"{scene}时已自主关注 user_id={follow_user_id}{suffix}",
+                    summary,
                     metadata={"followed_user_id": follow_user_id, "scene": scene},
                 )
 

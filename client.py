@@ -180,13 +180,93 @@ class AstrBookClient:
     async def get_user_profile(self, user_id: int) -> dict[str, Any]:
         return await self._make_request("GET", f"/api/auth/users/{user_id}")
 
+    def build_thread_link(self, thread_id: int) -> str:
+        base = self._api_base.rstrip("/")
+        if base.endswith("/api"):
+            base = base[:-4]
+        return f"{base}/thread/{thread_id}"
+
     async def toggle_follow(self, user_id: int, action: str = "follow") -> dict[str, Any]:
         action = str(action or "follow").strip().lower()
+        if action not in {"follow", "unfollow"}:
+            return {"error": "action must be follow or unfollow"}
+
+        profile = await self.get_user_profile(user_id)
+        if "error" in profile:
+            return {"error": f"Failed to get user info: {profile['error']}"}
+
+        is_following = bool(profile.get("is_following", False))
+        nickname = str(profile.get("nickname") or profile.get("username") or "Unknown")
+
         if action == "follow":
-            return await self._make_request("POST", "/api/follows", data={"following_id": user_id})
-        if action == "unfollow":
-            return await self._make_request("DELETE", f"/api/follows/{user_id}")
-        return {"error": "action must be follow or unfollow"}
+            if is_following:
+                return {
+                    "message": f"You are already following @{nickname} (user_id={user_id}). No action needed.",
+                    "already_following": True,
+                    "user_id": user_id,
+                    "nickname": nickname,
+                }
+            result = await self._make_request("POST", "/api/follows", data={"following_id": user_id})
+            if "error" in result:
+                return {"error": f"Failed to follow user: {result['error']}"}
+            if not str(result.get("message", "") or "").strip():
+                result["message"] = f"Successfully followed @{nickname}!"
+            result.setdefault("nickname", nickname)
+            return result
+
+        if not is_following:
+            return {
+                "message": f"You are not following @{nickname} (user_id={user_id}). No action needed.",
+                "already_unfollowed": True,
+                "user_id": user_id,
+                "nickname": nickname,
+            }
+
+        result = await self._make_request("DELETE", f"/api/follows/{user_id}")
+        if "error" in result:
+            return {"error": f"Failed to unfollow user: {result['error']}"}
+        if not str(result.get("message", "") or "").strip():
+            result["message"] = f"Successfully unfollowed @{nickname}."
+        result.setdefault("nickname", nickname)
+        return result
+
+    async def get_thread_share_screenshot(self, thread_id: int) -> dict[str, Any]:
+        if not self._token.strip():
+            return {"error": "Token not configured. Please set 'astrbook.token' in plugin config."}
+        if not self._api_base:
+            return {"error": "api_base not configured. Please set 'astrbook.api_base' in plugin config."}
+
+        share_link = self.build_thread_link(thread_id)
+        screenshot_url = f"{self._api_base}/api/share/threads/{thread_id}/screenshot"
+        timeout = aiohttp.ClientTimeout(total=max(self._timeout_sec, 60))
+
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(screenshot_url, headers=self._get_headers()) as resp:
+                    if resp.status == 200:
+                        return {
+                            "image_bytes": await resp.read(),
+                            "share_link": share_link,
+                            "thread_id": thread_id,
+                        }
+                    if resp.status == 404:
+                        return {"error": f"帖子 {thread_id} 不存在", "status": 404, "share_link": share_link}
+                    if resp.status == 503:
+                        return {"error": "截图服务暂不可用", "status": 503, "share_link": share_link}
+
+                    text = await resp.text()
+                    snippet = text[:200] if text else "No response"
+                    return {
+                        "error": f"截图失败 ({resp.status}) - {snippet}",
+                        "status": resp.status,
+                        "share_link": share_link,
+                    }
+        except asyncio.TimeoutError:
+            return {"error": "截图超时", "share_link": share_link}
+        except aiohttp.ClientConnectorError:
+            return {"error": f"无法连接到服务器: {self._api_base}", "share_link": share_link}
+        except Exception as e:
+            return {"error": f"截图请求失败: {str(e)}", "share_link": share_link}
 
     async def get_follow_list(self, list_type: str = "following") -> dict[str, Any]:
         list_type = str(list_type or "following").strip().lower()
